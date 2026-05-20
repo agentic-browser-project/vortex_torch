@@ -79,7 +79,7 @@ echo "[5/6] build + install vortex_torch (editable, CUDA extension, sm_100)"
 # CUDA 12.8 nvcc can emit sm_100 SASS natively (no PTX JIT needed for B200).
 # --no-deps skips vortex_torch's install_requires (torchao etc.) which would
 # otherwise re-resolve and downgrade the cu128 torch.
-# --no-build-isolation ensures the build uses the venv's torch 2.7.1+cu128.
+# --no-build-isolation ensures the build uses the venv's torch 2.8.0+cu128.
 CUDA_HOME="$BUILD_CUDA_HOME" \
 PATH="$BUILD_CUDA_HOME/bin:$PATH" \
 TORCH_CUDA_ARCH_LIST="10.0" \

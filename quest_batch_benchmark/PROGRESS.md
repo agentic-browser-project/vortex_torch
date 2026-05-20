@@ -1,83 +1,100 @@
-# Quest Batch Benchmark — Progress / Resume Handoff
+# Quest Batch Benchmark — Progress / Handoff
 
-**Last updated:** 2026-05-20, end of session (node stopping).
-**Branch:** `quest-batch-benchmark` (in repo `/vast/projects/liuv/pennnetworks/xutingl/vortex_torch`, forked from `v0.3` @ `6825ff4`).
+**Status:** ✅ COMPLETE — all 9 tasks done, benchmark run, final review approved.
+**Last updated:** 2026-05-20.
+**Branch:** `quest-batch-benchmark` (repo `/vast/projects/liuv/pennnetworks/xutingl/vortex_torch`, forked from `v0.3` @ `6825ff4`).
 
-This benchmark is being built by executing `IMPLEMENTATION_PLAN.md` task-by-task with
-the **superpowers:subagent-driven-development** workflow: per task, dispatch an
-implementer subagent → spec-compliance review → code-quality review → fix loop → next task.
+Built by executing `IMPLEMENTATION_PLAN.md` task-by-task with the
+**superpowers:subagent-driven-development** workflow (per task: implementer
+subagent → spec-compliance review → code-quality review → fix loop), then a
+final whole-implementation review.
 
 ---
 
-## Status at pause
+## Result
+
+`results/tpot_vs_batchsize.csv` — mean decode TPOT (ms/token), Qwen3-8B,
+`request_005` (9,661 input tokens), Quest `topk_val=64`:
+
+| batch | dense | quest | speedup |
+|------:|------:|------:|--------:|
+| 1  | 5.62  | 5.54 | 1.02× |
+| 2  | 5.99  | 5.73 | 1.05× |
+| 4  | 6.84  | 6.09 | 1.12× |
+| 8  | 8.74  | 6.43 | 1.36× |
+| 16 | 11.94 | 6.93 | 1.73× |
+| 32 | 19.23 | 8.54 | 2.25× |
+| 64 | OOM   | OOM  | —     |
+
+Quest decode TPOT scales far better with batch size than dense attention —
+2.25× faster at batch 32. Both modes OOM at batch 64 (recorded `status=oom`).
+
+---
+
+## Task status
 
 | Task | State | Commits |
 |------|-------|---------|
-| 1. uv venv + stack | ✅ DONE — implemented, spec-reviewed, code-quality-reviewed, fixes applied | `aebc440`, `23facdc`, `6692b48` |
-| 2. Download Qwen3-8B | ✅ DONE — downloaded + verified (no commit; model lives outside the repo) | — |
-| 3. Scaffold + `prompt_io.py` + tests | ⚠️ IMPLEMENTED & COMMITTED, **reviews NOT done yet** | `81d494c` |
-| 4–9 | ⬜ not started | — |
+| 1. uv venv + stack | ✅ DONE — revised for B200, see below | `aebc440` … `4c6f79d` |
+| 2. Download Qwen3-8B | ✅ DONE (model lives outside the repo) | — |
+| 3. Scaffold + `prompt_io.py` | ✅ DONE — spec + code-quality reviewed | `81d494c` |
+| 4. Benchmark harness | ✅ DONE — reviewed; doc fixes + crash bugfix | `ab361a6`, `5312869`, `099151e` |
+| 5. Smoke gate | ✅ PASSED — dense→FlashInfer, quest→VTXGraph backends | `4c6f79d` |
+| 6. Results aggregator | ✅ DONE — spec + code-quality reviewed | `11567be` |
+| 7. Driver script | ✅ DONE | `dfb9829` |
+| 8. Full benchmark run | ✅ DONE — `mem_fraction_static` tuned, results committed | `0be1162`, `6aeb33e` |
+| 9. README | ✅ DONE | `8e388a5` |
 
-`IMPLEMENTATION_PLAN.md` is committed alongside this file. Tasks 4–9 are fully specified there.
-
----
-
-## ▶️ How to resume (next session)
-
-1. `cd /vast/projects/liuv/pennnetworks/xutingl/vortex_torch && git checkout quest-batch-benchmark`
-2. Re-invoke the **superpowers:subagent-driven-development** skill.
-3. **First action: finish Task 3's reviews** (they were not run before the pause):
-   - Dispatch a spec-compliance reviewer for Task 3 (commit `81d494c`, base `6692b48`).
-   - Then a code-quality reviewer.
-   - Apply any fixes. Note the Task 3 open concern below.
-4. Then continue with Tasks 4 → 9 from `IMPLEMENTATION_PLAN.md`, one at a time.
-5. Finish with the whole-implementation code review + `superpowers:finishing-a-development-branch`.
-
-### Task 3 open concern (must be checked during its review)
-The implementer reported **DONE_WITH_CONCERNS**. Deviations from the plan's literal code,
-both believed correct but unverified by review:
-- `prompt_io.py` — the plan's `apply_chat_template(tokenize=True)` returns a `BatchEncoding`
-  (not a list) under the installed `transformers==5.8.1`. The implementer added
-  `return_tensors=None` plus a `hasattr(ids, "input_ids")` unwrap guard. Verify this is
-  correct and minimal.
-- `quest_batch_benchmark/.gitignore` gained negation rules (`!request.json`, `!tests/`,
-  `!tests/**`) because the repo-root `.gitignore` was otherwise hiding those paths. Verify.
-- Tests pass: `test_prompt_io.py` 2/2 green. **`request_005` tokenizes to 9,661 tokens**
-  (Task 9's README needs this number; the plan estimated ~8K).
+Final whole-implementation review: **approved** (only minor cleanups, applied).
 
 ---
 
-## Environment facts (already set up — do NOT redo)
+## ⚠️ Major deviation — B200 environment rework
 
-- **uv venv:** `quest_batch_benchmark/.venv` — use `quest_batch_benchmark/.venv/bin/python`
-  for everything. Created by `quest_batch_benchmark/setup_env.sh` (re-runnable).
-- **Stack actually installed** (deviates from the plan, intentionally — see below):
-  `torch==2.7.1+cu128` (NOT cu126 — cu126 lacks B200/sm_100 kernels and errors with
-  "no kernel image available"), sgl-kernel 0.2.4, flashinfer-python 0.2.7.post1,
-  the patched sglang fork 0.4.9 (editable, `third_party/sglang`), `vortex_torch` +
-  `vortex_torch_C` CUDA extension (built for `sm_100` / `TORCH_CUDA_ARCH_LIST=10.0`
-  using a CUDA 12.8 toolkit), transformers 5.8.1, numpy 2.3.5, xgrammar 0.2.0.
-- **B200 CUDA gate passed** — torch runs on the dedicated B200 (`dgx006`, sm_100).
-- **Model:** `/vast/projects/liuv/pennnetworks/hf_models/Qwen/Qwen3-8B`
-  (`Qwen3ForCausalLM`, 36 layers, 8 KV heads — the text twin of Qwen3-VL-8B; the
-  framework's sglang fork has no `qwen3_vl` support, hence the substitution).
-- **sglang submodule** has a committed one-line `hasattr` guard patch in
-  `python/sglang/srt/utils.py` (harmless with the final torch).
-- Known benign warnings at import: `pynvml` deprecation; `NVCC Compiler not found,
-  use NVRTC for DeepGEMM JIT` (affects both quest and dense equally — relative TPOT
-  comparison unaffected; consider putting nvcc on PATH for Task 8 if absolute numbers
-  matter).
+The plan's "known-good" stack (the `vortex` conda env: torch 2.7.1+cu126,
+sgl-kernel 0.2.4) is **Hopper-only and cannot run on this B200 cluster**.
+sgl-kernel 0.2.x ships no sm_100 kernels and no PTX — `rmsnorm` fails with
+"no kernel image is available for execution on the device". The whole cluster
+is B200 (`dgx-b200` partition, dgx001–029); no Hopper nodes exist. Fixed
+(commit `4c6f79d`):
 
-## User decisions baked into the plan
-- Model: Qwen3-8B (text twin). Include a **dense baseline** alongside Quest.
-- KV cache stays **bf16**; any batch size that OOMs is recorded `status=oom`, sweep stops.
-- Engine booted with `disable_radix_cache=True` so KV-cache reuse cannot make the
-  quest-vs-dense comparison unfair.
+- torch 2.7.1 → **2.8.0+cu128**, torchvision → 0.23.0, triton → 3.4.0.
+- sgl-kernel 0.2.4 → **0.3.17.post1** (first series with an `sm100/` build;
+  it requires torch 2.8.0).
+- `vortex_torch_C` rebuilt for sm_100 against torch 2.8.0.
+- `benchmark_quest_tpot.py` sets `CUDA_HOME` + `PATH` (ninja, nvcc) at import,
+  so flashinfer's and vortex's runtime JIT compilation works.
 
-## Notes / risks for remaining tasks
-- **Task 5 is a hard gate:** it verifies vortex sparsity actually activates through
-  `sglang.bench_one_batch`. If it fails, pivot to the `sgl.Engine` delta-method
-  fallback documented in `IMPLEMENTATION_PLAN.md` → "Risks & Contingencies" → R2.
-- Task 1 used `--no-deps` installs with a hand-curated sglang runtime dep list; if a
-  later task hits a missing-module ImportError, add the package (pinned) to
-  `setup_env.sh` step 4 and re-run.
+`setup_env.sh` reflects the new pins. The CUDA 12.8 toolkit used to build
+`vortex_torch_C` is the spack install
+`/vast/parcc/spack/sw/apps/linux-sapphirerapids/cuda-12.8.1-lmm74gnqr2pl2dzbtfjdwoo3fnwbar43`.
+
+Two other in-flight fixes:
+- A `build_server_args` crash — `parse_known_args([])` exited the process
+  because `ServerArgs` makes `--model-path` required (commit `099151e`).
+- `--mem-fraction-static` default 0.9 → **0.6** (commit `0be1162`): at 0.9 the
+  static KV pool is over-allocated (~144 GB) and large-batch prefill
+  activations OOM at batch ≥ 16; 0.6 keeps enough KV for batch 64 while
+  freeing room for the prefill, so the sweep reaches batch 32.
+
+---
+
+## How to re-run
+
+```bash
+cd /vast/projects/liuv/pennnetworks/xutingl/vortex_torch/quest_batch_benchmark
+GPU=0 bash run_benchmark.sh        # dense + quest sweeps, then aggregate
+.venv/bin/python -m pytest         # 8 unit tests
+```
+
+The venv (`quest_batch_benchmark/.venv`) and the Qwen3-8B checkpoint
+(`/vast/projects/liuv/pennnetworks/hf_models/Qwen/Qwen3-8B`) are already set
+up. To recreate the venv: `bash setup_env.sh`. The harness sets `CUDA_HOME`/
+`PATH` itself — no external env vars needed beyond `CUDA_VISIBLE_DEVICES`/`GPU`.
+
+## User decisions baked into the benchmark
+- Model: Qwen3-8B (text twin of Qwen3-VL-8B). Dense baseline included.
+- KV cache stays bf16; any batch size that OOMs is recorded `status=oom`,
+  the ascending sweep stops.
+- Engine booted with `disable_radix_cache=True` so KV-cache reuse cannot make
+  the quest-vs-dense comparison unfair.

@@ -10,3 +10,5 @@ __pycache__/
 !request.json
 !tests/
 !tests/**
+# ...but never the compiled bytecode under tests/
+tests/__pycache__/
