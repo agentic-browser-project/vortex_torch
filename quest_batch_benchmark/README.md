@@ -137,3 +137,44 @@ context — while Quest stays nearly flat because each query reads only the
 top-64 blocks. By batch 32, Quest is **2.26× faster** (8.53 ms vs 19.27 ms).
 Both modes OOM at batch 64 (the prefill of 64 × 9,661 tokens exceeds B200
 memory); this is recorded as `status=oom` and the sweep stops.
+
+## Measurement scope — read before comparing against other benchmarks
+
+The TPOT reported here is a **decode-kernel microbenchmark** number. It is
+*lower* than other "TPOT" measurements of the same model that include more of
+the stack — match the measurement path before comparing across benchmarks.
+
+- **vs an end-to-end sglang server.** A server's per-token latency also pays
+  the request scheduler, the sampling loop, detokenization and streaming/IPC
+  on every decode step. That overhead is largely fixed per step, so a
+  server-path TPOT can be several times this microbenchmark's TPOT and much
+  flatter across batch size. This is why this benchmark's dense baseline
+  (~5.6 ms at batch 1) sits well below a server-style baseline such as the
+  TreeSparseAttention project's ~23 ms sglang baseline for the same model and
+  GPU. Sanity check: a bs-1 decode step reads ~16 GB weights + ~2.8 GB KV
+  ≈ 19 GB; at the B200's ~8 TB/s that is a ~2.4 ms memory-bandwidth floor, so
+  ~5.6 ms (≈2.4× the floor) is the expected order of magnitude for pure decode.
+
+- **vs eager mode (CUDA graphs).** This harness runs decode with CUDA graphs
+  (the realistic production path). Eager mode (`--disable-cuda-graph`) is only
+  modestly slower — measured, dense, no graph:
+
+  | batch | dense, CUDA graph | dense, eager | eager / graph |
+  |------:|------------------:|-------------:|--------------:|
+  | 1  | 5.64 ms  | 7.03 ms  | 1.25× |
+  | 2  | 6.01 ms  | 7.62 ms  | 1.27× |
+  | 4  | 6.88 ms  | 7.95 ms  | 1.16× |
+  | 8  | 8.76 ms  | 9.77 ms  | 1.12× |
+  | 16 | 12.03 ms | 12.98 ms | 1.08× |
+
+  So CUDA graphs account for only a ~1.1–1.3× difference here, not a large one.
+  Reproduce the eager column with
+  `.venv/bin/python benchmark_quest_tpot.py --attention dense --disable-cuda-graph`.
+
+- **vs output length.** No effect — TPOT is the same at 128 and 256 decode
+  steps (the context grows only ~2.6% over 256 steps).
+
+**Bottom line:** to compare these numbers against another benchmark, match the
+measurement path (server vs microbenchmark, eager vs graph) — not just the
+model and GPU. The benchmark's own quest-vs-dense comparison is internally
+valid regardless, since both modes are measured through the identical path.
