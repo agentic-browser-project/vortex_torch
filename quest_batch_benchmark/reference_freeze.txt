@@ -1,3 +1,4 @@
+# pip freeze of conda env `vortex` at /vast/projects/liuv/pennnetworks/jiaheng/miniconda3/envs/vortex — provenance reference only (the venv uses cu128 torch, not the cu126 in this freeze).
 absl-py==2.4.0
 accelerate==1.13.0
 aenum==3.1.15

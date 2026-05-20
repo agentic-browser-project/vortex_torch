@@ -42,15 +42,15 @@ uv pip install --python "$VENV" --no-deps \
   flashinfer-python==0.2.7.post1 \
   flashinfer-cubin==0.6.8.post1
 
-# Install non-conflicting deps
+# Install non-conflicting deps (pinned to reference_freeze.txt versions)
 uv pip install --python "$VENV" \
   triton==3.3.1 \
-  "numpy>=2.0,<3" \
-  pandas \
-  orjson \
-  uvloop \
-  "huggingface-hub" \
-  pytest \
+  numpy==2.3.5 \
+  pandas==3.0.3 \
+  orjson==3.11.9 \
+  uvloop==0.21.0 \
+  "huggingface-hub==1.14.0" \
+  pytest==9.0.3 \
   ninja \
   pynvml \
   einops==0.8.1
@@ -66,8 +66,8 @@ uv pip install --python "$VENV" \
   "interegular" "llguidance>=0.7.11,<0.8.0" \
   "msgspec" "packaging==25.0" "partial_json_parser" "pillow" \
   "prometheus-client>=0.20.0" "psutil" "pydantic" "python-multipart" \
-  "pyzmq>=25.1.2" "xgrammar==0.1.19" \
-  "torchao==0.9.0" "transformers==4.53.0" "timm==1.0.16" \
+  "pyzmq>=25.1.2" "xgrammar==0.2.0" \
+  "torchao==0.9.0" "transformers==5.8.1" "timm==1.0.16" \
   "compressed-tensors"
 
 echo "[5/6] build + install vortex_torch (editable, CUDA extension, sm_100)"
