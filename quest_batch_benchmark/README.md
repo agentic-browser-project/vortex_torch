@@ -54,7 +54,18 @@ has no material effect on TPOT: over 256 steps the context grows only
 
 ## Reproduce
 
-Requires 1× NVIDIA B200 (sm_100) — e.g. any `dgx-b200` node on this cluster.
+**Prerequisites:**
+- An NVIDIA **B200** (sm_100) GPU — e.g. any `dgx-b200` node on this cluster.
+  (The stack is Blackwell-specific; it will not run on a Hopper GPU as-is.)
+- [`uv`](https://docs.astral.sh/uv/) on `PATH`, and Python 3.12 available.
+- A **CUDA ≥ 12.8 toolkit** — needed to compile the `vortex_torch_C` sm_100
+  extension. `setup_env.sh` defaults to the spack install at
+  `/vast/parcc/spack/.../cuda-12.8.1-lmm74gnqr2pl2dzbtfjdwoo3fnwbar43`;
+  if yours is elsewhere, run `BUILD_CUDA_HOME=<toolkit-dir> bash setup_env.sh`.
+- Network access (PyPI + the PyTorch cu128 wheel index).
+
+`setup_env.sh` checks these, fetches the `third_party/sglang` submodule
+itself, then builds everything; it is re-runnable.
 
 ```bash
 cd /vast/projects/liuv/pennnetworks/xutingl/vortex_torch

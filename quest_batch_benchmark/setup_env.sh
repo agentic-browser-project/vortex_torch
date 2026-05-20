@@ -25,11 +25,26 @@ REPO=/vast/projects/liuv/pennnetworks/xutingl/vortex_torch
 BENCH="$REPO/quest_batch_benchmark"
 VENV="$BENCH/.venv"
 # CUDA 12.8 nvcc from spack — supports sm_100 (B200) natively.
-# Used only to BUILD the vortex_torch_C CUDA extension.
-BUILD_CUDA_HOME=/vast/parcc/spack/sw/apps/linux-sapphirerapids/cuda-12.8.1-lmm74gnqr2pl2dzbtfjdwoo3fnwbar43
+# Used only to BUILD the vortex_torch_C CUDA extension. Override if yours is
+# elsewhere:  BUILD_CUDA_HOME=<cuda-toolkit-dir> bash setup_env.sh
+BUILD_CUDA_HOME="${BUILD_CUDA_HOME:-/vast/parcc/spack/sw/apps/linux-sapphirerapids/cuda-12.8.1-lmm74gnqr2pl2dzbtfjdwoo3fnwbar43}"
 TORCH_INDEX=https://download.pytorch.org/whl/cu128
 
 cd "$REPO"
+
+# --- preflight: check prerequisites, fetch the sglang fork submodule -----
+# Prerequisites: an NVIDIA B200 (sm_100) GPU, `uv` on PATH, Python 3.12, a
+# CUDA >= 12.8 toolkit ($BUILD_CUDA_HOME), and network access (PyPI + the
+# PyTorch cu128 index).
+command -v uv >/dev/null || { echo "ERROR: 'uv' is not on PATH -- install uv first." >&2; exit 1; }
+if [ ! -x "$BUILD_CUDA_HOME/bin/nvcc" ]; then
+  echo "ERROR: no CUDA toolkit found at BUILD_CUDA_HOME=$BUILD_CUDA_HOME" >&2
+  echo "       vortex_torch_C needs a CUDA >= 12.8 nvcc to build for sm_100." >&2
+  echo "       Override: BUILD_CUDA_HOME=<cuda-toolkit-dir> bash setup_env.sh" >&2
+  exit 1
+fi
+echo "[0/6] fetch the patched sglang fork submodule"
+git submodule update --init third_party/sglang
 
 echo "[1/6] create uv venv (python 3.12)"
 uv venv --python 3.12 "$VENV" 2>/dev/null || uv venv --python 3.12 --clear "$VENV"
