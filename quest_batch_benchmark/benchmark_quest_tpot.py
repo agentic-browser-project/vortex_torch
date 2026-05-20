@@ -86,7 +86,7 @@ def build_server_args(args, n_input_tokens: int) -> ServerArgs:
     """
     parser = argparse.ArgumentParser()
     ServerArgs.add_cli_args(parser)
-    ns, _ = parser.parse_known_args([])
+    ns, _ = parser.parse_known_args(["--model-path", args.model_path])
     for field in dataclasses.fields(ServerArgs):
         if hasattr(ns, field.name):
             continue
