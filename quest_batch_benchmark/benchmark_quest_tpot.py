@@ -24,10 +24,26 @@ import argparse
 import csv
 import dataclasses
 import logging
+import os
 import statistics
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List
+
+# --- runtime environment for JIT compilation -------------------------------
+# flashinfer (its batch-decode module) and vortex (the quest kernels) both
+# JIT-compile CUDA code at runtime: they need `ninja` on PATH and a CUDA
+# toolkit reachable via CUDA_HOME. sgl-kernel 0.3.17 also probes CUDA_HOME at
+# import time. The venv ships `ninja` in its bin/; the CUDA 12.8 toolkit
+# (matching torch's cu128 build) is the spack install used by setup_env.sh.
+# These must be set BEFORE torch / sglang / sgl-kernel / flashinfer import.
+_CUDA_HOME = "/vast/parcc/spack/sw/apps/linux-sapphirerapids/cuda-12.8.1-lmm74gnqr2pl2dzbtfjdwoo3fnwbar43"
+os.environ.setdefault("CUDA_HOME", _CUDA_HOME)
+os.environ["PATH"] = os.pathsep.join([
+    str(Path(__file__).resolve().parent / ".venv" / "bin"),
+    os.path.join(os.environ["CUDA_HOME"], "bin"),
+    os.environ.get("PATH", ""),
+])
 
 import torch
 

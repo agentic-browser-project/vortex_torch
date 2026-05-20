@@ -2,17 +2,22 @@
 # Create the uv venv for the Quest batch benchmark and install the full stack.
 # Re-runnable (clears and recreates the venv if it already exists).
 #
-# DEVIATION FROM SPEC (torch 2.7.1+cu126 → torch 2.7.1+cu128):
-#   torch 2.7.1+cu126 does NOT run on B200 (sm_100): produces
-#   "no kernel image is available" at runtime (no sm_100 cubin images).
-#   torch 2.7.1+cu128 ships sm_100 cubins and has the identical Python ABI,
-#   so sgl-kernel==0.2.4 and flashinfer-python==0.2.7.post1 continue to load.
-#   sgl-kernel and flashinfer-python are installed with --no-deps to prevent
-#   their pinned CUDA 12.6 transitive deps from downgrading the cu128 libs.
-#   The sglang fork is installed with --no-deps to skip its torch==2.7.1 (cu126)
-#   pin; its runtime deps are installed separately excluding torch/torchvision.
-#   vortex_torch is installed with --no-deps for the same reason.
-#   The CUDA extension is compiled with the spack CUDA 12.8 toolchain targeting
+# DEVIATION FROM SPEC (the plan's torch 2.7.1+cu126 stack is Hopper-only):
+#   The plan mirrored the `vortex` conda env (torch 2.7.1+cu126, sgl-kernel
+#   0.2.4). That stack CANNOT run on a B200 (sm_100):
+#     - torch 2.7.1+cu126 has no sm_100 cubins.
+#     - sgl-kernel 0.2.4 ships kernels for sm_75..sm_90a only (no sm_100,
+#       no PTX) -- its rmsnorm etc. fail with "no kernel image available".
+#   The whole 0.2.x sgl-kernel series is Hopper-only; Blackwell support
+#   first appears in the 0.3.x series, which requires torch 2.8.0. So:
+#     - torch 2.8.0+cu128 / torchvision 0.23.0  (ship sm_100 cubins).
+#     - sgl-kernel 0.3.17.post1                 (ships an sm100/ build).
+#     - triton 3.4.0                            (required by torch 2.8.0).
+#   sgl-kernel / flashinfer wheels are installed with --no-deps so their
+#   transitive pins cannot downgrade the cu128 libs. The sglang fork and
+#   vortex_torch are installed with --no-deps to skip their torch pins;
+#   their runtime deps are installed separately. The vortex_torch_C CUDA
+#   extension is compiled with the spack CUDA 12.8 toolchain targeting
 #   sm_100 natively (TORCH_CUDA_ARCH_LIST="10.0").
 set -euo pipefail
 
@@ -29,23 +34,23 @@ cd "$REPO"
 echo "[1/6] create uv venv (python 3.12)"
 uv venv --python 3.12 "$VENV" 2>/dev/null || uv venv --python 3.12 --clear "$VENV"
 
-echo "[2/6] install torch 2.7.1+cu128 (includes sm_100 cubins for B200)"
+echo "[2/6] install torch 2.8.0+cu128 (includes sm_100 cubins for B200)"
 uv pip install --python "$VENV" \
   --index-url "$TORCH_INDEX" \
-  torch==2.7.1 torchvision==0.22.1
+  torch==2.8.0 torchvision==0.23.0
 
 echo "[3/6] install the bundled-stack wheels (pinned, --no-deps to preserve cu128)"
 # Install with --no-deps to avoid transitive CUDA 12.6 packages that would
 # downgrade our cu128 nvidia-* libs and force torch back to +cu126.
 uv pip install --python "$VENV" --no-deps \
-  sgl-kernel==0.2.4 \
+  sgl-kernel==0.3.17.post1 \
   flashinfer-python==0.2.7.post1 \
   flashinfer-cubin==0.6.8.post1
 
 # Install non-conflicting deps (pinned to reference_freeze.txt versions)
 uv pip install --python "$VENV" \
-  triton==3.3.1 \
-  numpy==2.3.5 \
+  triton==3.4.0 \
+  numpy==2.4.4 \
   pandas==3.0.3 \
   orjson==3.11.9 \
   uvloop==0.21.0 \
