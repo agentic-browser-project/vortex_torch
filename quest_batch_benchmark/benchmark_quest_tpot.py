@@ -123,7 +123,7 @@ def build_server_args(args, n_input_tokens: int) -> ServerArgs:
     server_args.model_path = args.model_path
     server_args.attention_backend = "flashinfer"
     server_args.disable_overlap_schedule = True
-    server_args.disable_cuda_graph = False
+    server_args.disable_cuda_graph = args.disable_cuda_graph
     server_args.disable_radix_cache = True            # fair: no KV-cache reuse
     server_args.tp_size = 1
     server_args.mem_fraction_static = args.mem_fraction_static
@@ -295,7 +295,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--topk-val", type=int, default=64,
                    help="Quest static block budget (blocks of 16 tokens kept).")
     p.add_argument("--warmup-steps", type=int, default=16)
-    p.add_argument("--measured-steps", type=int, default=128)
+    p.add_argument("--measured-steps", type=int, default=256)
+    p.add_argument("--disable-cuda-graph", action="store_true",
+                   help="Run decode in eager mode (no CUDA graph). CUDA graphs "
+                        "are the realistic production path; this flag exists to "
+                        "compare against eager-mode references.")
     p.add_argument("--max-seq-lens", type=int, default=16384)
     p.add_argument("--mem-fraction-static", type=float, default=0.6,
                    help="Fraction of GPU memory for the static model+KV pool. "

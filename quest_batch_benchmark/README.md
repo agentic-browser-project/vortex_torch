@@ -16,10 +16,19 @@ Here it is the `gqa_quest_sparse_attention` flow registered in
 `sglang.bench_one_batch` to run a *fixed* decode batch size: it replicates one
 request `batch_size` times, prefills, then times each decode step with CUDA
 events. A decode step emits exactly one token per request, so the step latency
-*is* TPOT. Reported TPOT is the mean over 128 measured steps (after 16 warmup
+*is* TPOT. Reported TPOT is the mean over 256 measured steps (after 16 warmup
 steps). The CUDA-event interval includes host-side launch overhead, but that
 overhead is identical for the quest and dense modes, so the relative
 comparison — the benchmark's deliverable — is unaffected.
+
+This is a **tight decode-loop microbenchmark**: `bench_one_batch` calls the
+model's `decode()` directly, so the measured TPOT is decode-kernel time plus
+CUDA launch overhead only. It does *not* include the full serving stack
+(request scheduler, tokenizer/detokenizer, streaming/IPC) that an end-to-end
+sglang *server* TPOT measurement would — a server-path TPOT for the same model
+is typically several times larger. The output length (number of decode steps)
+has no material effect on TPOT: over 256 steps the context grows only
+9,661 → 9,917 tokens (~2.6%).
 
 ## Setup substitutions and deviations (read this)
 
@@ -81,7 +90,8 @@ Run unit tests with `.venv/bin/python -m pytest`.
 
 `benchmark_quest_tpot.py` flags: `--topk-val` (Quest block budget, default 64 =
 1024 tokens kept), `--batch-sizes`, `--warmup-steps` (16), `--measured-steps`
-(128), `--max-seq-lens` (16384), `--mem-fraction-static` (0.6 — see note below).
+(256), `--max-seq-lens` (16384), `--mem-fraction-static` (0.6 — see note below),
+`--disable-cuda-graph` (run decode eager instead of with a CUDA graph).
 
 `--mem-fraction-static` defaults to **0.6**, not the sglang default 0.9: at 0.9
 the static KV pool is allocated ~144 GB (far more than this 9.6K-token workload
@@ -111,12 +121,12 @@ Quest `topk_val=64`:
 
 | batch size | dense TPOT | quest TPOT | quest speedup |
 |-----------:|-----------:|-----------:|--------------:|
-| 1  | 5.62  | 5.54 | 1.02× |
-| 2  | 5.99  | 5.73 | 1.05× |
-| 4  | 6.84  | 6.09 | 1.12× |
-| 8  | 8.74  | 6.43 | 1.36× |
-| 16 | 11.94 | 6.93 | 1.73× |
-| 32 | 19.23 | 8.54 | 2.25× |
+| 1  | 5.64  | 5.53 | 1.02× |
+| 2  | 6.01  | 5.72 | 1.05× |
+| 4  | 6.88  | 6.08 | 1.13× |
+| 8  | 8.76  | 6.44 | 1.36× |
+| 16 | 12.03 | 6.93 | 1.74× |
+| 32 | 19.27 | 8.53 | 2.26× |
 | 64 | OOM   | OOM  | —     |
 
 **Quest decode TPOT scales far better with batch size than dense attention.**
@@ -124,6 +134,6 @@ At batch 1 the two are within ~2% (the query–envelope scoring overhead roughly
 cancels the savings at tiny batch). As batch size grows, dense TPOT rises
 steeply — each query attends over the full ~600 KV blocks of the 9.6K-token
 context — while Quest stays nearly flat because each query reads only the
-top-64 blocks. By batch 32, Quest is **2.25× faster** (8.54 ms vs 19.23 ms).
+top-64 blocks. By batch 32, Quest is **2.26× faster** (8.53 ms vs 19.27 ms).
 Both modes OOM at batch 64 (the prefill of 64 × 9,661 tokens exceeds B200
 memory); this is recorded as `status=oom` and the sweep stops.
