@@ -1,0 +1,7 @@
+.venv/
+.vortex_cache/
+results/
+logs/
+__pycache__/
+*.pyc
+.pytest_cache/
