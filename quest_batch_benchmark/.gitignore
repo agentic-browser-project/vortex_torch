@@ -5,3 +5,8 @@ logs/
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# Track benchmark-specific files despite root .gitignore rules
+!request.json
+!tests/
+!tests/**
