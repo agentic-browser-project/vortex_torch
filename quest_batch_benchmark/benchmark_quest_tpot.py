@@ -24,7 +24,6 @@ import argparse
 import csv
 import dataclasses
 import logging
-import os
 import statistics
 from datetime import datetime, timezone
 from pathlib import Path
@@ -157,7 +156,14 @@ def make_reqs(input_ids: List[int], batch_size: int, max_new_tokens: int) -> Lis
 
 
 def time_decode(next_token_ids, batch, model_runner, warmup: int, measured: int) -> List[float]:
-    """Run warmup + measured decode steps; return per-step latency in ms."""
+    """Run warmup + measured decode steps; return per-step latency in ms.
+
+    Each latency is the CUDA-event interval between consecutive decode()
+    calls, so it includes host-side launch overhead in addition to GPU
+    kernel time. This overhead is identical for the quest and dense modes,
+    so the relative TPOT comparison -- the benchmark's actual deliverable --
+    is unaffected.
+    """
     for _ in range(warmup):
         next_token_ids, _ = decode(next_token_ids, batch, model_runner)
     torch.cuda.synchronize()
@@ -248,6 +254,10 @@ def run(args) -> None:
                     emit(batch_size, -1, None, "oom")
                     f.flush()
                     torch.cuda.empty_cache()
+                    # stopping the ascending sweep keeps any partially-allocated
+                    # KV-pool state from the failed extend() harmless: a larger
+                    # batch would only OOM harder, and continuing past an OOM
+                    # would risk running on corrupt pool state.
                     break
                 emit(batch_size, -1, None, "error")
                 f.flush()
