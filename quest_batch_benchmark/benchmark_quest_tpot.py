@@ -297,7 +297,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--warmup-steps", type=int, default=16)
     p.add_argument("--measured-steps", type=int, default=128)
     p.add_argument("--max-seq-lens", type=int, default=16384)
-    p.add_argument("--mem-fraction-static", type=float, default=0.9)
+    p.add_argument("--mem-fraction-static", type=float, default=0.6,
+                   help="Fraction of GPU memory for the static model+KV pool. "
+                        "0.6 (not 0.9): the KV pool only needs ~0.63M token "
+                        "slots for batch 64, so 0.9 over-allocates it and "
+                        "starves large-batch prefill activations -- a batch "
+                        ">=16 prefill then OOMs. 0.6 keeps enough KV while "
+                        "freeing room for the prefill.")
     p.add_argument("--vortex-cache-dir", default=str(here / ".vortex_cache"))
     return p
 
