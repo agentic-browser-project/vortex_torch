@@ -69,24 +69,26 @@ _METRIC_COLS = ("tokens_generated", "ttft_ms", "tpot_ms", "decode_time_ms",
 
 
 def build_engine_kwargs(args, n_input_tokens: int) -> dict:
-    """sgl.Engine kwargs for one attention mode, matched to the tpot-no-share baseline.
+    """sgl.Engine kwargs for one attention mode on vortex_torch v0.5.
 
-    The baseline (`measure_batch_latency_offline.py`) boots the engine with CUDA
-    graph disabled, radix cache disabled, the flashinfer backend, and debug
-    logging. Chunked prefill is additionally disabled here (offline batch
-    inference -- whole-request prefill). `quest` additionally enables the vortex
-    sparsity backend with the Quest flow -- the same field values the project
-    uses elsewhere for Quest.
+    Mirrors the `tpot-no-share` sgl baseline (CUDA graph off, radix cache off,
+    flashinfer backend, debug logging) and disables chunked prefill (offline
+    batch inference prefills each request whole). `quest` additionally enables
+    v0.5's vortex sparsity with the built-in `gqa_quest_sparse_attention` flow.
+
+    v0.5 notes: `page_size` must be a multiple of `vortex_block_size` (the
+    vortex backend asserts this), so it is set to 16 for both modes; the
+    vortex backend is present in-process either way once `vortex_torch` is
+    imported. `enable_vortex_sparsity=False` makes `dense` full attention.
     """
-    # vortex buffers are sized for the input + the decode tokens + a little headroom
+    # vortex buffers are sized for the input + the decode tokens + headroom
     max_seq = max(args.max_seq_lens, n_input_tokens + args.max_tokens + 64)
 
     # Disable chunked prefill -- offline batch inference prefills each request
-    # whole, in its own forward, never split or co-packed with another request.
-    # sglang's -1 "disable" sentinel is rejected by the vortex page-size
-    # assertion (chunked_prefill_size % page_size == 0), so instead set the
-    # prefill budget to one whole request, rounded up to the 16-token page plus
-    # a one-page margin (>= one request, < two -- so requests never co-pack).
+    # whole, never split or co-packed. sglang's -1 "disable" sentinel is
+    # rejected by the vortex page-size assertion (chunked_prefill_size %
+    # page_size == 0), so set the budget to one whole request rounded up to
+    # the 16-token page plus a one-page margin (>= one request, < two).
     chunked_prefill_size = ((n_input_tokens + 15) // 16) * 16 + 16
 
     kwargs = {
@@ -94,13 +96,15 @@ def build_engine_kwargs(args, n_input_tokens: int) -> dict:
         "tp_size": 1,
         "trust_remote_code": True,
         "attention_backend": "flashinfer",
+        "page_size": 16,
+        "kv_cache_dtype": "auto",
         "disable_cuda_graph": not args.enable_cuda_graph,
         "disable_radix_cache": True,
-        # The vortex quest backend reuses shared instance-attribute metadata
-        # buffers (qo_indptr, kv_indices, batch_table, ...) across forwards; the
-        # sglang overlap scheduler runs forwards in a separate thread, racing
-        # those buffers -> illegal memory access / hang. Disabling the overlap
-        # schedule serializes scheduling and the forward, closing the race.
+        # The vortex backend reuses shared metadata buffers across forwards;
+        # sglang's overlap scheduler runs forwards in a separate thread and
+        # races them. Disabling the overlap schedule serializes scheduling and
+        # the forward, closing the race. Required for the vortex backend in
+        # v0.5 (vortex_torch/engine/sgl/api.py hardcodes the same).
         "disable_overlap_schedule": True,
         "chunked_prefill_size": chunked_prefill_size,
         "decode_log_interval": 1,
@@ -114,10 +118,10 @@ def build_engine_kwargs(args, n_input_tokens: int) -> dict:
         kwargs.update({
             "enable_vortex_sparsity": True,
             "vortex_module_name": QUEST_MODULE,
+            "vortex_attention_backend": "flashinfer",
             "vortex_topk_val": args.topk_val,
             "vortex_topk_ratio": 0.0,            # pure static block budget
             "vortex_block_size": 16,
-            "page_size": 16,
             "vortex_block_reserved_bos": 1,
             "vortex_block_reserved_eos": 2,
             "vortex_workload_chunk_size": 32,
@@ -127,6 +131,9 @@ def build_engine_kwargs(args, n_input_tokens: int) -> dict:
             "vortex_max_seq_lens": max_seq,
             "vortex_compilation_cache_dir": args.vortex_cache_dir,
         })
+    else:
+        # dense -- full attention; sparsity explicitly off
+        kwargs["enable_vortex_sparsity"] = False
     return kwargs
 
 
@@ -344,7 +351,10 @@ def build_parser() -> argparse.ArgumentParser:
         description="Quest decode-speed (TPOT) batch benchmark")
     p.add_argument("--attention", choices=["quest", "dense"], required=True)
     p.add_argument("--model-path",
-                   default="/vast/projects/liuv/pennnetworks/hf_models/Qwen/Qwen3-8B")
+                   default="/vast/projects/liuv/pennnetworks/hf_models/Qwen/Qwen3-VL-8B-Instruct",
+                   help="Headline model is Qwen3-VL-8B-Instruct (the sgl "
+                        "baseline's model). Fallback: .../Qwen/Qwen3-8B if "
+                        "Qwen3-VL cannot run -- see README.md.")
     p.add_argument("--request", default=str(here / "request.json"))
     p.add_argument("--raw-csv", default=str(here / "results" / "raw_results.csv"))
     p.add_argument("--batch-sizes", type=lambda s: [int(x) for x in s.split(",")],

@@ -25,16 +25,16 @@ def test_dense_kwargs_match_baseline():
     k = build_engine_kwargs(_args("dense"), n_input_tokens=9661)
     assert k["disable_cuda_graph"] is True
     assert k["disable_radix_cache"] is True
-    assert k["disable_overlap_schedule"] is True   # vortex quest is not overlap-safe
+    assert k["disable_overlap_schedule"] is True   # vortex is not overlap-safe
     assert k["attention_backend"] == "flashinfer"
-    # chunked prefill disabled: budget holds one whole request (>=9661), is a
-    # multiple of the 16-token page, and is < 2 requests so none ever co-pack
+    assert k["page_size"] == 16                    # multiple of vortex_block_size
+    assert k["kv_cache_dtype"] == "auto"
+    # chunked prefill disabled: budget holds one whole request, is a multiple
+    # of the 16-token page, and is < 2 requests so none ever co-pack
     assert 9661 <= k["chunked_prefill_size"] < 2 * 9661
     assert k["chunked_prefill_size"] % 16 == 0
-    assert k["decode_log_interval"] == 1
-    assert k["show_time_cost"] is True
-    assert k["tp_size"] == 1
-    assert "enable_vortex_sparsity" not in k
+    assert k["enable_vortex_sparsity"] is False    # dense -> sparsity off
+    assert "vortex_module_name" not in k           # no vortex flow in dense
     assert "mem_fraction_static" not in k          # None -> omitted
 
 
@@ -42,8 +42,12 @@ def test_quest_kwargs_add_vortex():
     k = build_engine_kwargs(_args("quest"), n_input_tokens=9661)
     assert k["enable_vortex_sparsity"] is True
     assert k["vortex_module_name"] == "gqa_quest_sparse_attention"
+    assert k["vortex_attention_backend"] == "flashinfer"
     assert k["vortex_topk_val"] == 64
+    assert k["vortex_block_size"] == 16
+    assert k["page_size"] == 16
     assert k["vortex_max_seq_lens"] >= 9661 + 256
+    assert k["vortex_compilation_cache_dir"]       # non-empty
 
 
 def test_enable_cuda_graph_flag():
