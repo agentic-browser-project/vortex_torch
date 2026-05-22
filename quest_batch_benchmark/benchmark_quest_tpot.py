@@ -34,6 +34,11 @@ from typing import List, Optional
 # BEFORE torch / sglang / sgl-kernel / flashinfer / vortex import.
 _CUDA_HOME = "/vast/parcc/spack/sw/apps/linux-sapphirerapids/cuda-12.8.1-lmm74gnqr2pl2dzbtfjdwoo3fnwbar43"
 os.environ.setdefault("CUDA_HOME", _CUDA_HOME)
+# sglang 0.5.9 hard-checks the CuDNN version against torch at startup and
+# refuses to boot; the stack's bundled CuDNN 9.10 trips that check on
+# torch 2.9.1 even though decode is numerically correct (confirmed by the
+# smoke gate -- coherent output). Skip the over-strict check.
+os.environ.setdefault("SGLANG_DISABLE_CUDNN_CHECK", "1")
 os.environ["PATH"] = os.pathsep.join([
     str(Path(__file__).resolve().parent / ".venv" / "bin"),
     os.path.join(os.environ["CUDA_HOME"], "bin"),
