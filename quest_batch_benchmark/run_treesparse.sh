@@ -71,7 +71,9 @@ if [ ! "$LATEST" -nt "$STAMP" ]; then
 fi
 
 cp "$LATEST" "$DEST"
-python3 -c "import json; d=json.load(open('$DEST')); \
+# Use `python` (verified above to be TreeSparse's venv interpreter) rather than
+# a bare `python3` that could resolve elsewhere on PATH.
+python -c "import json; d=json.load(open('$DEST')); \
 print('[treesparse]', len(d), 'batch sizes:', sorted(int(k) for k in d))" || {
   echo "ERROR: $DEST is not valid JSON" >&2; exit 1; }
 
