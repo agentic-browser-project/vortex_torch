@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# Drive the full Quest batch benchmark: dense baseline, then quest, then aggregate.
-# Each mode boots its own sgl.Engine and measures decode TPOT in streaming mode,
-# matching the sgl baseline `run_batch_experiments_offline.sh tpot-no-share`.
+# Drive the full three-way batch benchmark: dense + quest, then aggregate, then
+# the TreeSparseAttention run, then the three-way comparison merge.
+# The dense/quest modes each boot their own sgl.Engine and measure decode TPOT
+# in streaming mode, matching the sgl baseline
+# `run_batch_experiments_offline.sh tpot-no-share`. TreeSparse runs separately
+# via run_treesparse.sh in its own environment.
 set -uo pipefail
 
 BENCH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -29,9 +32,34 @@ for mode in dense quest; do
   fi
 done
 
-echo ">>> aggregating"
+echo ">>> aggregating dense + quest"
 "$PY" aggregate_results.py --raw-csv "$RAW" --out-csv "$OUT" || exit 1
 
+echo ">>> running treesparse  (TreeSparseAttention's own environment)"
+CUDA_VISIBLE_DEVICES="$GPU" bash "$BENCH/run_treesparse.sh" \
+  2>&1 | tee "logs/treesparse_${TS}.log"
+status=${PIPESTATUS[0]}
+if [ "$status" -ne 0 ]; then
+  echo "!!! treesparse run failed (exit $status) -- see logs/treesparse_${TS}.log" >&2
+  exit "$status"
+fi
+
+echo ">>> building the three-way comparison"
+# --quest-csv / --treesparse-json are passed explicitly so the call still works
+# if $OUT is overridden; both equal build_comparison.py's own defaults.
+"$PY" build_comparison.py \
+  --quest-csv "$OUT" \
+  --treesparse-json "$BENCH/results/treesparse_raw.json" \
+  2>&1 | tee "logs/comparison_${TS}.log"
+status=${PIPESTATUS[0]}
+if [ "$status" -ne 0 ]; then
+  echo "!!! comparison build failed (exit $status) -- see logs/comparison_${TS}.log" >&2
+  exit "$status"
+fi
+
 echo ">>> done"
-echo "    raw      : $RAW"
-echo "    processed: $OUT"
+echo "    raw (dense+quest) : $RAW"
+echo "    aggregated        : $OUT"
+echo "    treesparse raw    : $BENCH/results/treesparse_raw.json"
+echo "    three-way CSV     : $BENCH/results/tpot_three_way.csv"
+echo "    comparison table  : $BENCH/results/comparison_table.md"
