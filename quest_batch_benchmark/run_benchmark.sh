@@ -30,7 +30,7 @@ for mode in dense quest; do
 done
 
 echo ">>> aggregating"
-"$PY" aggregate_results.py --raw-csv "$RAW" --out-csv "$OUT"
+"$PY" aggregate_results.py --raw-csv "$RAW" --out-csv "$OUT" || exit 1
 
 echo ">>> done"
 echo "    raw      : $RAW"

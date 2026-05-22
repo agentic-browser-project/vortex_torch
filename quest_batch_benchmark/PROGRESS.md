@@ -101,7 +101,9 @@ hardcodes this flag for the same reason.
 
 sglang v0.5.9's startup check is over-strict for the bundled CuDNN 9.10 +
 torch 2.9.1 stack on the B200. The harness sets `SGLANG_DISABLE_CUDNN_CHECK=1`
-before importing sglang. Decode output is numerically correct (smoke-verified).
+before importing sglang. The smoke test confirmed coherent decode output -- a
+sanity check, not a CuDNN-matched numerical validation; sufficient for a TPOT
+timing benchmark (any CuDNN effect is identical across the dense and quest runs).
 
 ### 4. Triton JIT compilation cache
 
@@ -110,6 +112,16 @@ cold start, Triton compiles kernels during the first warmup generate for each
 batch shape. A second run reuses the compiled cache and is faster. If running
 benchmarks under a time-limited job, factor in ~5-10 min for initial
 compilation before timed measurements begin.
+
+### 5. Environment build deviated from the plan
+
+The plan's Task 1 specified torch 2.7.1+cu128 / flashinfer 0.6.8 via sglang's
+`[all]` extra. `setup_env.sh` instead installs sglang v0.5.9's **base**
+dependencies only, which pin a different but internally-consistent stack
+(torch 2.9.1, sgl-kernel 0.3.21, flashinfer 0.6.3). The `[all]` extra pulls
+unrelated diffusion/tracing packages and desynced torch on the first attempt;
+base-deps-only is the correct, reproducible build. `reference_freeze.txt`
+records the exact resolved versions.
 
 ## How to re-run
 

@@ -36,8 +36,9 @@ _CUDA_HOME = "/vast/parcc/spack/sw/apps/linux-sapphirerapids/cuda-12.8.1-lmm74gn
 os.environ.setdefault("CUDA_HOME", _CUDA_HOME)
 # sglang 0.5.9 hard-checks the CuDNN version against torch at startup and
 # refuses to boot; the stack's bundled CuDNN 9.10 trips that check on
-# torch 2.9.1 even though decode is numerically correct (confirmed by the
-# smoke gate -- coherent output). Skip the over-strict check.
+# torch 2.9.1. The smoke gate confirmed decode produces coherent output (a
+# sanity check, not a CuDNN-matched numerical validation) -- sufficient for
+# a TPOT timing benchmark. Skip the over-strict check.
 os.environ.setdefault("SGLANG_DISABLE_CUDNN_CHECK", "1")
 os.environ["PATH"] = os.pathsep.join([
     str(Path(__file__).resolve().parent / ".venv" / "bin"),
@@ -251,6 +252,8 @@ def measure_batch_latency(engine, prompts: List[str], max_tokens: int) -> dict:
                                  stream=True):
         if first_token_time is None:
             first_token_time = time.perf_counter()
+        # every request shares max_new_tokens + ignore_eos, so the batch
+        # decodes in lockstep -- request 0's running count represents the batch.
         item = chunk[0] if isinstance(chunk, list) else chunk
         tokens_generated = _chunk_token_count(item)
 

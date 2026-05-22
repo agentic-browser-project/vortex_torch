@@ -88,8 +88,9 @@ class VortexFlashInferBackend(AttentionBackend):
         # model but a plain decoder (no cross-attention -- is_encoder_decoder
         # is still asserted above). sglang's get_hf_text_config() unwraps its
         # nested text_config, so num_attention_heads / head_dim / kv-heads are
-        # already correct for the text decoder. The vortex sparse path only
-        # touches decoder attention, so a text-only prompt runs unchanged.
+        # already correct for the text decoder. The vortex sparse path consumes
+        # post-RoPE Q/K and never recomputes positions, so Qwen3-VL's mRoPE is
+        # handled entirely by the model layers -- the backend is unaffected.
         assert kv_indptr_buf is None
         assert kv_last_page_len_buf is None
         self.num_wrappers = 2

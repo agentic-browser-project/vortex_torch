@@ -131,9 +131,11 @@ Four deliberate deviations from the baseline's defaults:
   same reason.)
 - **`SGLANG_DISABLE_CUDNN_CHECK=1`** — sglang v0.5.9's startup CuDNN-version
   check is over-strict for the bundled CuDNN 9.10 + torch 2.9.1 combination.
-  The check fires and blocks boot even though decode output is numerically
-  correct (confirmed by the smoke test). The harness sets this env var to skip
-  the check. This is purely a startup guard, not a runtime correctness issue.
+  The check fires and blocks boot; the harness sets this env var to skip it.
+  The smoke test confirmed decode produces coherent output — a sanity check,
+  not a CuDNN-matched numerical validation. That is sufficient here: this is a
+  TPOT *timing* benchmark, and any CuDNN effect is identical across the dense
+  and quest runs, so the dense-vs-quest comparison is unaffected.
 - **Quest mode added.** The baseline ships only `flashinfer` (dense) and
   `tree_sparse`; this benchmark adds `quest` via the vortex sparsity backend,
   with `topk_val=64` (1024 tokens kept), and measures dense here too so the
