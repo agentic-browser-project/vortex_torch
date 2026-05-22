@@ -82,9 +82,14 @@ class VortexFlashInferBackend(AttentionBackend):
         ), "Sliding window and cross attention are not supported together"
 
         assert model_runner.sliding_window_size is None
-        assert not model_runner.model_config.is_encoder_decoder 
+        assert not model_runner.model_config.is_encoder_decoder
         assert not self.skip_prefill
-        assert not self.is_multimodal
+        # `is_multimodal` is NOT asserted off: Qwen3-VL-8B is a multimodal
+        # model but a plain decoder (no cross-attention -- is_encoder_decoder
+        # is still asserted above). sglang's get_hf_text_config() unwraps its
+        # nested text_config, so num_attention_heads / head_dim / kv-heads are
+        # already correct for the text decoder. The vortex sparse path only
+        # touches decoder attention, so a text-only prompt runs unchanged.
         assert kv_indptr_buf is None
         assert kv_last_page_len_buf is None
         self.num_wrappers = 2
