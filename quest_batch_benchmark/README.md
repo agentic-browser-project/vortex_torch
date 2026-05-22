@@ -202,7 +202,7 @@ while kernels compile.
 Three-way decode TPOT (ms/token), `Qwen3-VL-8B-Instruct`, `request.json`
 (9,661 input tokens), 256 output tokens, `repeat=3`, B200:
 
-| batch size | dense TPOT (ms) | quest TPOT (ms) | treesparse TPOT (ms) | quest vs dense | treesparse vs dense |
+| batch size | dense TPOT (ms) | quest (topk=64) TPOT (ms) | treesparse TPOT (ms) | quest vs dense | treesparse vs dense |
 |-----------:|----------------:|----------------:|---------------------:|---------------:|--------------------:|
 | 1 | 9.11 | 11.15 | 10.78 | 0.82x | 0.84x |
 | 2 | 10.44 | 13.16 | 13.88 | 0.79x | 0.75x |
