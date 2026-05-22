@@ -1,8 +1,10 @@
-# Quest Batch Benchmark — Progress / Handoff
+# Sparse-Attention Batch Benchmark — Progress / Handoff
 
 **Status:** COMPLETE — harness rebuilt for vortex v0.5 + sglang v0.5.9,
-multimodal guard patched, full benchmark run, all 14 configs status=ok.
-**Last updated:** 2026-05-21.
+multimodal guard patched, full benchmark run; three-way comparison with
+TreeSparseAttention complete (dense, quest, treesparse — all 21 configs
+status=ok).
+**Last updated:** 2026-05-22.
 **Branch:** `quest-batch-benchmark-v0.5`
 **Worktree:** `/vast/projects/liuv/pennnetworks/xutingl/vortex_torch/.worktrees/quest-batch-benchmark-v0.5`
 
@@ -17,18 +19,18 @@ v0.5 runs on `Qwen3-VL-8B-Instruct` — the exact model the sgl baseline uses.
 ## Result
 
 `results/tpot_vs_batchsize.csv` — mean decode TPOT (ms/token),
-`Qwen3-VL-8B-Instruct`, `request_005` (9,661 input tokens), 256 output tokens,
+`Qwen3-VL-8B-Instruct`, `request.json` (9,661 input tokens), 256 output tokens,
 `repeat=3`, Quest `topk_val=64`, `sgl.Engine` (`tpot-no-share` config):
 
 | batch | dense (ms/tok) | quest (ms/tok) | speedup |
 |------:|---------------:|---------------:|--------:|
-| 1  |  9.51 | 10.93 | 0.87x |
-| 2  | 10.18 | 12.68 | 0.80x |
-| 4  | 11.84 | 14.56 | 0.81x |
-| 8  | 15.07 | 17.88 | 0.84x |
-| 16 | 21.75 | 24.83 | 0.88x |
-| 32 | 37.37 | 38.14 | 0.98x |
-| 64 | 71.79 | 64.72 | 1.11x |
+| 1  |  9.11 | 11.15 | 0.82x |
+| 2  | 10.44 | 13.16 | 0.79x |
+| 4  | 11.99 | 14.99 | 0.80x |
+| 8  | 15.37 | 18.22 | 0.84x |
+| 16 | 21.85 | 25.23 | 0.87x |
+| 32 | 37.53 | 38.68 | 0.97x |
+| 64 | 72.12 | 65.17 | 1.11x |
 
 Quest is slower than dense at small batch (query-envelope scoring overhead),
 reaches near-parity at batch 32, and is 1.11x faster at batch 64. All 14
@@ -36,6 +38,27 @@ configs completed `status=ok` (the KV pool holds every batch — no capping).
 
 Note: these numbers are not directly comparable to the v0.3 branch's
 Qwen3-8B results. The meaningful comparison is dense-vs-quest within each run.
+
+## Three-way result
+
+`results/comparison_table.md` — three-way decode TPOT (ms/token), dense vs
+Quest vs TreeSparseAttention, same `request.json` (9,661 input tokens), 256
+output tokens, `repeat=3`, B200:
+
+| batch size | dense TPOT (ms) | quest TPOT (ms) | treesparse TPOT (ms) | quest vs dense | treesparse vs dense |
+|-----------:|----------------:|----------------:|---------------------:|---------------:|--------------------:|
+| 1 | 9.11 | 11.15 | 10.78 | 0.82x | 0.84x |
+| 2 | 10.44 | 13.16 | 13.88 | 0.79x | 0.75x |
+| 4 | 11.99 | 14.99 | 14.32 | 0.80x | 0.84x |
+| 8 | 15.37 | 18.22 | 15.55 | 0.84x | 0.99x |
+| 16 | 21.85 | 25.23 | 16.59 | 0.87x | 1.32x |
+| 32 | 37.53 | 38.68 | 18.58 | 0.97x | 2.02x |
+| 64 | 72.12 | 65.17 | 24.91 | 1.11x | 2.89x |
+
+TreeSparse crosses over dense between batch 8 and 16 and is 2.89× faster than dense at
+batch 64, consistent with its tensor-core paged-decode design favouring large
+batches. All 21 three-way configurations (3 methods × 7 batch sizes) completed
+`status=ok`.
 
 ## Branch commits
 
@@ -47,6 +70,13 @@ Qwen3-8B results. The meaningful comparison is dense-vs-quest within each run.
 | `064c68d` | Patch `is_multimodal` guard in flashinfer.py and trtllm.py |
 | `1dcb4a0` | CuDNN-check workaround (`SGLANG_DISABLE_CUDNN_CHECK=1`) |
 | `a60c599` | Benchmark results committed |
+| `cfe8e83` | Verify TreeSparseAttention environment |
+| `1ed9d76` | TreeSparse three-way comparison plan |
+| `0ad7dd4` | TreeSparse results → comparison-row converter |
+| `b77ae4a` | Three-way TPOT comparison merge |
+| `871c2f9` | `run_treesparse.sh` orchestrator |
+| `b81981a` | Wire treesparse + comparison into `run_benchmark.sh` |
+| `1ae55e8` | Three-way benchmark results (dense, quest, treesparse) |
 
 ## Methodology
 
@@ -58,6 +88,12 @@ Qwen3-8B results. The meaningful comparison is dense-vs-quest within each run.
   `disable_radix_cache=True`, `attention_backend=flashinfer`,
   `decode_log_interval=1`, `show_time_cost=True`, `log_level=debug`, default
   `mem_fraction_static`.
+- **TreeSparse methodology:** runs in its own environment via `run_treesparse.sh`
+  on the shared `request.json`. Its harness (`benchmark_batch.py`) has no
+  warmup repetition, so its first rep absorbs FlashInfer JIT / cold-cache cost.
+  The three-way merge (`build_comparison.py`) uses TreeSparse's `tpot_median_ms`
+  (median of 3 — discards the cold rep) as the apples-to-apples match for
+  quest's warm mean. All 21 three-way configurations completed `status=ok`.
 
 ## Deviations from the sgl baseline
 
@@ -128,17 +164,17 @@ records the exact resolved versions.
 ```bash
 cd /vast/projects/liuv/pennnetworks/xutingl/vortex_torch/.worktrees/quest-batch-benchmark-v0.5
 
-# Full benchmark (dense + quest, then aggregate)
+# Full benchmark (dense + quest + treesparse, then aggregate)
 GPU=0 bash quest_batch_benchmark/run_benchmark.sh
 
-# Run modes separately (useful under time limits; harness appends to raw CSV)
+# Run dense + quest modes separately (useful under time limits; harness appends to raw CSV)
 quest_batch_benchmark/.venv/bin/python quest_batch_benchmark/benchmark_quest_tpot.py \
   --attention dense --raw-csv quest_batch_benchmark/results/raw_results.csv
 quest_batch_benchmark/.venv/bin/python quest_batch_benchmark/benchmark_quest_tpot.py \
   --attention quest --raw-csv quest_batch_benchmark/results/raw_results.csv
 quest_batch_benchmark/.venv/bin/python quest_batch_benchmark/aggregate_results.py
 
-# Unit tests (19 tests)
+# Unit tests (28 tests)
 quest_batch_benchmark/.venv/bin/python -m pytest quest_batch_benchmark/tests/ -q
 ```
 
@@ -148,6 +184,9 @@ If re-building the environment from scratch:
 bash quest_batch_benchmark/setup_env.sh   # ~15-40 min on first run
 ```
 
+TreeSparse uses its own pre-built environment — see `treesparse_env_notes.md`.
+A separate build is not required.
+
 ## File index
 
 | File | Purpose |
@@ -155,10 +194,17 @@ bash quest_batch_benchmark/setup_env.sh   # ~15-40 min on first run
 | `setup_env.sh` | uv venv build for v0.5 stack |
 | `benchmark_quest_tpot.py` | Engine harness, one attention mode, all batch sizes |
 | `aggregate_results.py` | Aggregates raw CSV into processed curve |
-| `run_benchmark.sh` | Driver for dense + quest + aggregate |
+| `run_benchmark.sh` | Driver for dense + quest + treesparse + three-way comparison |
+| `run_treesparse.sh` | Orchestrator for TreeSparse's own harness on `request.json` |
+| `treesparse_results.py` | Converts TreeSparse raw JSON into a comparison row |
+| `build_comparison.py` | Merges dense/quest + treesparse into three-way CSV and table |
+| `treesparse_env_notes.md` | Notes on TreeSparse's pre-built Python 3.13 environment |
 | `prompt_io.py` | Chat-template rendering of `request.json` |
 | `request.json` | Benchmark input (9,661 tokens) |
 | `reference_freeze.txt` | `uv pip freeze` of the exact environment |
-| `results/raw_results.csv` | Per-(mode, batch, repeat) measurements |
-| `results/tpot_vs_batchsize.csv` | Aggregated TPOT curve |
-| `tests/` | Unit tests (19 tests) |
+| `results/raw_results.csv` | Per-(mode, batch, repeat) measurements (dense + quest) |
+| `results/tpot_vs_batchsize.csv` | Aggregated TPOT curve (dense + quest) |
+| `results/treesparse_raw.json` | Raw per-repeat output from TreeSparse's harness |
+| `results/tpot_three_way.csv` | Merged three-way TPOT table |
+| `results/comparison_table.md` | Rendered markdown of the three-way comparison table |
+| `tests/` | Unit tests (28 tests) |
