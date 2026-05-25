@@ -222,26 +222,11 @@ class RotaryEmbedding(CustomOp):
         key: torch.Tensor,
         offsets: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        if _is_cuda and (self.head_size in [64, 128, 256, 512]):
-            apply_rope_with_cos_sin_cache_inplace(
-                positions=positions,
-                query=query,
-                key=key,
-                head_size=self.head_size,
-                cos_sin_cache=self.cos_sin_cache,
-                is_neox=self.is_neox_style,
-            )
-        else:
-            self.cos_sin_cache = self.cos_sin_cache.to(query.device, dtype=query.dtype)
-            self.vllm_rotary_embedding(
-                positions,
-                query,
-                key,
-                self.head_size,
-                self.cos_sin_cache,
-                self.is_neox_style,
-            )
-        return query, key
+        # PATCH (block_size_sweep, sm_120): sgl-kernel 0.2.4 has no sm_120
+        # binaries for apply_rope_with_cos_sin_cache_inplace, and vllm
+        # isn't installed in this env. Fall back to forward_native (pure
+        # PyTorch). Slower but works on Blackwell.
+        return self.forward_native(positions, query, key, offsets)
 
     def extra_repr(self) -> str:
         s = f"head_size={self.head_size}, rotary_dim={self.rotary_dim}"

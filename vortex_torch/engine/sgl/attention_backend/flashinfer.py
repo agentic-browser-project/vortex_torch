@@ -638,6 +638,33 @@ class VortexFlashInferBackend(AttentionBackend):
                 ctx=self.ctx
             )
 
+            # PATCH (block_size_sweep): dump sparse_kv_indices for trace-driven policy analysis
+            _dump_dir = os.environ.get("VORTEX_DUMP_TRACE_DIR")
+            if _dump_dir:
+                import json as _json
+                _indptr_full = self.ctx.metadata.sparse_kv_indptr.cpu().tolist()
+                # Trim indptr: find the first index where the sequence stops being non-decreasing
+                _real_len = len(_indptr_full)
+                for _i in range(1, len(_indptr_full)):
+                    if _indptr_full[_i] < _indptr_full[_i - 1]:
+                        _real_len = _i
+                        break
+                _indptr = _indptr_full[:_real_len]
+                _total = _indptr[-1] if _indptr else 0
+                _indices = self.forward_metadata.decode_wrappers[1]._paged_kv_indices_buf[:_total].cpu().tolist()
+                _last_page_len = self.ctx.metadata.kv_last_page_len[:len(_indptr)-1].cpu().tolist()
+                _trace_path = os.path.join(_dump_dir, f"trace_layer{layer.layer_id}.jsonl")
+                os.makedirs(_dump_dir, exist_ok=True)
+                with open(_trace_path, "a") as _f:
+                    _f.write(_json.dumps({
+                        "layer_id": layer.layer_id,
+                        "num_kv_heads": self.num_kv_heads,
+                        "block_size": self.block_size,
+                        "indptr": _indptr,
+                        "indices": _indices,
+                        "last_page_len": _last_page_len,
+                    }) + "\n")
+
             # Sparse attention compute
             o = self.forward_metadata.decode_wrappers[1].forward(
                 q,

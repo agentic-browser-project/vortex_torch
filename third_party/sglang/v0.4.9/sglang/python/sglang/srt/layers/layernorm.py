@@ -73,11 +73,10 @@ class RMSNorm(CustomOp):
         x: torch.Tensor,
         residual: Optional[torch.Tensor] = None,
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
-        if residual is not None:
-            fused_add_rmsnorm(x, residual, self.weight.data, self.variance_epsilon)
-            return x, residual
-        out = rmsnorm(x, self.weight.data, self.variance_epsilon)
-        return out
+        # PATCH (block_size_sweep, sm_120): sgl-kernel 0.2.4 has no sm_120
+        # binaries — fall back to forward_native (pure PyTorch). Slower but
+        # works on Blackwell without rebuilding sgl-kernel from source.
+        return self.forward_native(x, residual)
 
     def forward_npu(
         self,

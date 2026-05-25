@@ -58,11 +58,9 @@ class SiluAndMul(CustomOp):
         return F.silu(x[..., :d]) * x[..., d:]
 
     def forward_cuda(self, x: torch.Tensor) -> torch.Tensor:
-        d = x.shape[-1] // 2
-        output_shape = x.shape[:-1] + (d,)
-        out = torch.empty(output_shape, dtype=x.dtype, device=x.device)
-        silu_and_mul(x, out)
-        return out
+        # PATCH (block_size_sweep, sm_120): sgl-kernel 0.2.4 has no sm_120
+        # binaries — fall back to forward_native (pure PyTorch SiLU * mul).
+        return self.forward_native(x)
 
     def forward_cpu(self, x: torch.Tensor) -> torch.Tensor:
         if _is_cpu_amx_available:
