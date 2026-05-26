@@ -37,6 +37,7 @@ POLICIES=(
     "method2_p32_t50:VORTEX_POLICY=method2_p32_t50"
     "method2_p32_t75:VORTEX_POLICY=method2_p32_t75"
     "bsr_baseline:VORTEX_USE_BSR=1"
+    "custom_baseline:VORTEX_USE_CUSTOM=1"
 )
 
 SUMMARY="$LOGDIR/summary.tsv"

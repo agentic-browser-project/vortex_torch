@@ -48,6 +48,12 @@ if is_flashinfer_available():
     from flashinfer.cascade import merge_state
     from flashinfer.decode import _get_range_buf, get_seq_lens
 
+# PATCH (Option A): custom Triton block-sparse decode kernel. Lives in a
+# sibling module so it can be developed/tested independently of FlashInfer.
+from vortex_torch.engine.sgl.attention_backend.block_sparse_decode_triton import (
+    BlockSparseDecodeTriton,
+)
+
 @dataclass
 class DecodeMetadata:
     decode_wrappers: List[BatchDecodeWithPagedKVCacheWrapper]
@@ -225,6 +231,12 @@ class VortexFlashInferBackend(AttentionBackend):
         # The BSR path goes through FA2/FA3 prefill kernel (not decode-specialized),
         # so it may be slower at q_len=1 — that's exactly what we're benchmarking.
         self.bsr_wrapper = BlockSparseAttentionWrapper(self.workspace_buffer)
+
+        # PATCH (block_size_sweep, Option A): a custom Triton block-sparse
+        # decode kernel that fuses sub-page (block_size=4) gather directly
+        # into the attention kernel — no FlashInfer wrapper involved.
+        # Activated when env var VORTEX_USE_CUSTOM=1 is set.
+        self.custom_decode = BlockSparseDecodeTriton()
         
         self.plan_decode = get_decode_planner(model_runner.server_args.vortex_schedule_policy)
         self.plan_prefill = get_prefill_planner()
@@ -700,7 +712,31 @@ class VortexFlashInferBackend(AttentionBackend):
                 )
 
             # Sparse attention compute
-            if os.environ.get("VORTEX_USE_BSR") == "1":
+            if os.environ.get("VORTEX_USE_CUSTOM") == "1":
+                # Option A: custom Triton kernel — gather + flash-attention
+                # fused, no FlashInfer wrapper. Reads the same sparse_kv_indptr
+                # / sparse_kv_indices that the indexer just filled.
+                # q.shape = [bs * num_kv_heads, group_size, head_dim]
+                bsr_M = q.shape[0]
+                total = int(self.ctx.metadata.sparse_kv_indptr[bsr_M].item())
+                # cache["k"] / cache["v"] viewed as [num_blocks, block_size, head_dim]
+                ck = cache["k"].view(-1, self.block_size, self.head_dim)
+                cv = cache["v"].view(-1, self.block_size, self.head_dim)
+                o = self.custom_decode.run(
+                    q=q,
+                    cache_k=ck,
+                    cache_v=cv,
+                    indptr=self.ctx.metadata.sparse_kv_indptr[:bsr_M + 1],
+                    indices=self.forward_metadata.decode_wrappers[1]._paged_kv_indices_buf[:total],
+                    last_block_len=self.ctx.metadata.kv_last_page_len[:bsr_M],
+                    sm_scale=layer.scaling,
+                )
+                if os.environ.get("VORTEX_CUSTOM_DEBUG") == "1" and layer.layer_id == 1:
+                    import sys
+                    print(f"[CUSTOM layer={layer.layer_id}] q.shape={tuple(q.shape)} cache_k.shape={tuple(cache['k'].shape)} bsr_M={bsr_M} total_indices={total}", file=sys.stderr)
+                    print(f"[CUSTOM layer={layer.layer_id}] o stats: mean={o.float().mean().item():.4f} std={o.float().std().item():.4f} "
+                          f"min={o.float().min().item():.4f} max={o.float().max().item():.4f} nans={torch.isnan(o).any().item()}", file=sys.stderr)
+            elif os.environ.get("VORTEX_USE_BSR") == "1":
                 # Option C: use BSR wrapper with flat KV view (no page concept).
                 # Must plan BSR PER LAYER (after indexer fills indices), because
                 # BlockSparseAttentionWrapper snapshots indices values at plan

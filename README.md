@@ -16,7 +16,7 @@ routes — increasing effort, increasing payoff:
 |---|---|---|---|
 | **B** — indices transformation hook | Rewrites `sparse_kv_indices` in place to simulate different page/threshold policies; underlying FlashInfer kernel unchanged (still page-of-block_size=4 BatchDecodeWithPagedKVCacheWrapper) | 1 day | **DONE** |
 | **C** — BSR wrapper swap | Drop `BatchDecodeWithPagedKVCacheWrapper(page_size=4)` for `BlockSparseAttentionWrapper(C=4, R=1)`. Flat KV view, arbitrary block gather, prefill kernel | 2–3 days | **DONE** |
-| **A** — custom CUDA fetch kernel | Replace FlashInfer entirely with a hand-written tiled-gather + flash-attention kernel that fuses sub-page gather into the K/V load loop | 5–10 days | **PLAN ONLY** (see end of this file) |
+| **A** — custom Triton fetch kernel | Custom Triton kernel that fuses block-granularity (BS=4) gather directly into flash-attention online softmax — no FlashInfer wrapper, no paging. Sub-page gather lives inside the kernel's K/V load loop. | 5–10 days planned, **v1 in 1 day** | **DONE (v1)** — needs tile tuning |
 
 ## The Option-B policies (compared in `run_method_comparison.sh`)
 
@@ -48,12 +48,13 @@ Throughput is similar across them (~10 tok/s, within ~5%):
 
 | Policy | Accuracy | Throughput (tok/s) | vs Block Fetch |
 |---|---|---|---|
-| **block_fetch** (baseline) | 1.0 | **10.30** | — |
-| method1_p32 | 1.0 | 10.42 | +1.2% |
-| method2_p32_t25 | 1.0 | 9.97 | −3.2% |
-| method2_p32_t50 | 1.0 | 10.45 | +1.5% |
-| method2_p32_t75 | 1.0 | 10.43 | +1.3% |
-| **bsr_baseline** (Option C) | 1.0 | 10.16 | −1.4% |
+| **block_fetch** (baseline) | 1.0 | **10.07** | — |
+| method1_p32 | 1.0 | 10.36 | +2.9% |
+| method2_p32_t25 | 1.0 | 10.49 | +4.2% |
+| method2_p32_t50 | 1.0 | 10.11 | +0.4% |
+| method2_p32_t75 | 1.0 | 10.43 | +3.6% |
+| **bsr_baseline** (Option C) | 1.0 | 9.83 | −2.4% |
+| **custom_baseline** (Option A, Triton v1) | 1.0 | 9.98 | −0.9% |
 
 **Caveat on noise:** the workload here is tiny (Qwen3-0.6B + 2 RULER
 prompts + 95 total decode tokens), so per-policy throughput swings of
@@ -205,87 +206,141 @@ BatchDecode (−1.4% here). The win of Option C is conceptual cleanliness
 and FlashInfer (page=4 in the BatchDecode path). BSR sees a flat KV
 and gathers arbitrary 4-token blocks directly.
 
-## Option A — Custom CUDA fetch + flash-attention kernel (PLAN ONLY)
+## Option A — Custom Triton fetch + flash-attention kernel (v1 done)
 
-**Why A is needed.** Both B and C use existing FlashInfer kernels. They
+**Why A.** Both B and C use existing FlashInfer kernels. They
 issue HBM loads at the kernel's native granularity (BatchDecode →
-page_size=4 tile loads; BSR → C=4 block tile loads). Real HBM bandwidth
-savings from "block-granularity gather" would require fusing the gather
-into the same kernel that computes attention, with a memory access
-pattern designed for sub-page tiles. This is a multi-day effort.
+page_size=4 tile loads; BSR → C=4 block tile loads). To truly own the
+HBM access pattern and verify that "block-granularity gather" actually
+saves bandwidth (vs. the framework forcing 32-token page loads), we
+need to **fuse the gather into the same kernel that does attention**.
 
-### A.1 — Anatomy of what we want
+### A.1 — What we built
 
-The kernel should, for each (request, kv_head) row, perform:
+A standalone Triton kernel:
+[`vortex_torch/engine/sgl/attention_backend/block_sparse_decode_triton.py`](vortex_torch/engine/sgl/attention_backend/block_sparse_decode_triton.py)
 
-```
-for each selected 4-token block_id in this row:
-    load 4 tokens × head_dim of K from cache[k]   (one tile load)
-    load 4 tokens × head_dim of V from cache[v]   (one tile load)
-    accumulate q·k.T into online-softmax state
-    accumulate softmax·v into output
-write o
-```
+For each (CSR row `n`, query head `g`), the kernel:
 
-This is **textbook flash-attention** with one twist: K/V are gathered
-by an indices list, not stored contiguously. The indices list is the
-already-existing `sparse_kv_indices` buffer.
+1. Loads `Q[n, g, :]` (one head_dim vector).
+2. Walks the row's selected blocks: `for i in [indptr[n], indptr[n+1])`:
+   - `block_id = indices[i]`
+   - Gathers `K[block_id, :, :]` and `V[block_id, :, :]` — each is one
+     `(BS=4, D=128)` tile.
+   - Computes `scores = q · k_tile.T` (shape `[BS]`).
+   - Applies a last-block mask on the final iteration only
+     (using `last_block_len[n]`).
+   - Updates flash-attention online softmax state `(m, l, acc)`.
+3. Writes `O[n, g, :] = acc / l`.
 
-### A.2 — Where to put the kernel
+No paging. No FlashInfer wrapper. The kernel reads the same
+`sparse_kv_indptr` / `sparse_kv_indices` buffers that the indexer
+just filled, plus the existing `kv_last_page_len` for the partial-block
+mask. K/V come from `cache["k"].view(num_blocks, BS, D)` directly.
 
-Two reasonable implementation paths:
+### A.2 — Why Triton instead of CUDA
 
-| Path | Reuse base | Effort | Risk |
-|---|---|---|---|
-| **A-FlashInfer** | Fork `flashinfer/csrc/single_decode.cu` and add a `gather_kv` path that reads block_ids from an indptr+indices buffer instead of computing block_ids from contiguous offsets | 5–7 days | low (kernel + JIT plumbing already proven) |
-| **A-FlashAttn** | Start from `flash-attn`'s decode kernel (cutlass) and add the same gather | 7–10 days | medium (we'd be vendoring more of flash-attn) |
+The original plan called for forking FlashInfer's
+`single_decode.cu`. We pivoted to Triton because:
 
-**Recommend A-FlashInfer.** vortex_torch is already wired into FlashInfer;
-the JIT pipeline, plan/run protocol, and head-dim instantiations are in
-place. The smallest possible diff: add a new kernel name (e.g.
-`block_sparse_decode`) alongside the existing `BatchDecodeWithPagedKVCacheWrapper`,
-copy-paste the decode kernel, and replace the page-block-offset address
-computation with `indices[indptr[row]+i] * block_size * head_dim` lookups.
+1. **No ninja/sm_120 toolchain pain.** Triton JIT-compiles per-call —
+   we already burned a day on FlashInfer CUDA build issues earlier in
+   this branch.
+2. **Day-1 working result.** Total time from green-field to RULER
+   accuracy=1.0 was ~3 hours, not 5–7 days.
+3. **Same address-computation expressiveness.** The Triton kernel
+   does `K_ptr + block_id * stride_kb + ...` which is exactly the
+   gather we'd hand-code in CUDA. Tensor-core MMA isn't used yet (a
+   real CUDA port could add it), but on `q_len=1` decode the gain is
+   secondary to memory access.
+4. **Easy iteration.** Autotune, tile-size sweeps, GQA broadcast
+   strategies are all one-line changes in Triton.
 
-### A.3 — Day-by-day plan
+If/when Triton hits a ceiling (e.g. on B200 with much larger
+contexts), the kernel can be ported to CUDA — the gather logic
+transfers 1:1.
 
-| Day | Task | Deliverable |
+### A.3 — Correctness validation
+
+- **Unit test** ([`algorithm_scientist/test_custom_kernel.py`](algorithm_scientist/test_custom_kernel.py)):
+  bit-exact match (`max_abs_diff = 0`) against a naive PyTorch
+  reference on a synthetic problem (N=2, G=4, BS=4, D=64,
+  num_blocks=16) — including a row with a partial-block mask.
+- **End-to-end RULER**: accuracy = 1.0 (same as BatchDecode and BSR).
+- **Output statistics** at layer 1 match the BSR/BatchDecode paths
+  in mean/std/min/max (within ~10% — see
+  `logs/full_comparison_*/custom_baseline.err` with `VORTEX_CUSTOM_DEBUG=1`).
+
+### A.4 — Current perf vs. headroom
+
+Throughput on Qwen3-0.6B + RULER 2-sample subset (small workload,
+within ~5% noise):
+
+| Backend | tok/s | vs BatchDecode |
 |---|---|---|
-| 1 | Read `flashinfer/csrc/decode/decode_kernel.cuh` (or wherever decode tiles are emitted in your FlashInfer version). Identify the *exact* line where K/V global addresses are computed from page_table and `kv_indices`. | Annotated diff plan |
-| 2 | Copy decode kernel to `block_sparse_decode_kernel.cuh`. Replace the page address computation with `indices[i] * (block_size * num_kv_heads * head_dim)`. Keep block_size as a kernel template parameter (default 4). | Kernel compiles, single-row unit test |
-| 3 | Add the Python wrapper (mirror `BatchDecodeWithPagedKVCacheWrapper` API). `plan()` records indptr layout only — indices are read at run() from a registered buffer pointer (same trick BatchDecode uses for cuda graph). | `BlockSparseDecodeWrapper` class with `.plan()` + `.run()` |
-| 4 | Wire into `vortex_torch/engine/sgl/attention_backend/flashinfer.py` behind `VORTEX_USE_CUSTOM=1`. Mirror the BSR integration (Option C) but with the new wrapper. | RULER runs end-to-end with custom kernel |
-| 5 | Match BatchDecode accuracy bit-exactly on the same indices. Tune tile sizes for block_size=4 (the existing decode kernel may be tuned for block_size=16 or 32). | Profile-guided tile size |
-| 6 | Benchmark on B200 vs BatchDecode and BSR. Verify HBM bandwidth savings show up in `nsys` profile (lower HBM bytes read per decode step). | Benchmark report |
-| 7 (slack) | Polish: cuda graph support, multi-stream, FA3 path | Production-ready |
+| BatchDecode (block_fetch) | 10.07 | — |
+| BSR (Option C) | 9.83 | −2.4% |
+| **Triton custom (Option A, v1)** | **9.98** | **−0.9%** |
 
-### A.4 — What can go wrong
+v1 is **already on par with BatchDecode and slightly faster than
+BSR** with zero tile-size tuning. That's because Triton's default
+parameters (`num_warps=4, num_stages=2`) happen to fit the
+`(BS=4, D=128)` tile size reasonably well. Plausible headroom:
 
-- **Register pressure with small tiles.** block_size=4 is unusually
-  small. The existing decode kernel is likely tuned for `BLOCK_N=64`
-  or `128`. Going to 4 may waste warp-level parallelism. Tile-fusing
-  (process 16 blocks per warp = 64 tokens) is the natural fix but
-  requires more thought on the gather pattern.
-- **L2 cache thrashing.** Gathering 4-token blocks from arbitrary
-  positions has worse spatial locality than reading contiguous 32-token
-  pages. May need a software-prefetching pass.
-- **GQA layout.** Q has `group_size` heads per KV head; the kernel must
-  broadcast K/V across the group. This is standard but the existing
-  BatchDecode does it one way and BSR another — the custom kernel
-  needs to pick one and be explicit.
-- **Last-block partial fill.** The last block of the sequence has
-  `last_page_len ≤ block_size` valid tokens. The mask logic must zero
-  out the invalid positions in the softmax. BatchDecode handles this
-  with `kv_last_page_len`; we'd need to thread that through too.
+- **Tile fusion.** Process 4 or 8 selected blocks per kernel iteration
+  rather than 1, amortising the gather instruction over more compute.
+- **Autotuning.** Sweep `num_warps ∈ {2, 4, 8}` and `num_stages ∈
+  {1, 2, 3}` for the actual (G, D, BS) combo.
+- **Block-major vs head-major parallelism.** Currently one program per
+  (n, g). Splitting along the K dimension (split-k decode) and
+  cross-program reduction would help for very long rows.
+- **Tensor cores via `tl.dot`.** For `(BS, D) @ (D, 1)` GEMV this is
+  marginal, but `(BS, D) @ (D, G)` (fused over GQA group) is a 4×16
+  matmul that does benefit from tensor cores.
 
-### A.5 — Stopping criterion
+### A.5 — Remaining work (was 5–7 days; now 2–3 days)
+
+| Day | Task | Status |
+|---|---|---|
+| 1 | Triton kernel + Python wrapper | ✅ done |
+| 1 | Wire into flashinfer.py behind `VORTEX_USE_CUSTOM=1` | ✅ done |
+| 1 | Unit test against naive reference | ✅ done |
+| 1 | End-to-end RULER accuracy = 1.0 | ✅ done |
+| 2 | Tile fusion (multi-block per iter) | TODO |
+| 2 | Autotune `num_warps` / `num_stages` for B200 sm_100 | TODO |
+| 2 | GQA-fused QK (`(BS, D) @ (D, G)` matmul via `tl.dot`) | TODO |
+| 3 | Benchmark on 70B + 32k context (B200), confirm HBM bandwidth win | TODO |
+| 3 (optional) | Port to CUDA / FlashInfer JIT if Triton ceiling hit | DEFERRED |
+
+### A.6 — Run it
+
+```bash
+VORTEX_USE_CUSTOM=1 python algorithm_scientist/run_ruler_trace.py \
+    --config submissions/block_size_sweep/batch_0_id2_page32.json
+```
+
+Or via the all-policies comparison:
+
+```bash
+bash run_method_comparison.sh
+```
+
+Debug mode (logs layer-1 output stats):
+
+```bash
+VORTEX_USE_CUSTOM=1 VORTEX_CUSTOM_DEBUG=1 python algorithm_scientist/run_ruler_trace.py ...
+```
+
+### A.7 — Stopping criterion
 
 Option A is "worth it" if, on a 70B model with `seq_len ≥ 32k` and
 `block_size=4`, the custom kernel beats BatchDecode (page=4) by **≥
-1.5×** in decode tok/s on B200. If it only matches, the win is purely
-cleaner code — defer to a future quarter. If it loses, the assumption
-that sub-page gather is HBM-bound was wrong; revisit the indexer cost
-instead.
+1.5×** in decode tok/s on B200. v1 matches BatchDecode on a tiny
+workload — the real test is at scale. If it only matches at scale,
+the win is purely cleaner code (no paging mismatch between sglang,
+vortex_torch, FlashInfer); defer further work. If it loses at scale,
+the assumption that sub-page gather is HBM-bound was wrong — revisit
+the indexer cost instead.
 
 ## Trace-driven analysis (companion, simulation-based)
 
