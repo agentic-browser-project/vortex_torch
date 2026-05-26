@@ -28,11 +28,10 @@ mkdir -p "$LOGDIR"
 
 POLICIES=(
     "block_fetch"
-    "method1_p16"
     "method1_p32"
-    "method2_p16_t50"
-    "method2_p32_t50"
     "method2_p32_t25"
+    "method2_p32_t50"
+    "method2_p32_t75"
 )
 
 SUMMARY="$LOGDIR/summary.tsv"

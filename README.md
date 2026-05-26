@@ -9,12 +9,12 @@ and `page_size=32`.
 | Policy | What it does | Granularity |
 |---|---|---|
 | **Block Fetch** | Load only the selected 4-token blocks (vortex_torch's actual current behavior) | block_size=4 |
-| **Method 1** (`method1_pP`) | If any selected block falls inside a P-token page, load ALL blocks of that page | P=16 or 32 |
-| **Method 2** (`method2_pP_tTT`) | Load a P-page only when hit ratio ≥ TT/100, otherwise drop | P=16/32, TT=25/50/75 |
+| **Method 1** (`method1_p32`) | If any selected block falls inside a 32-token page, load ALL 8 blocks of that page | P=32 (= sglang page_size) |
+| **Method 2** (`method2_p32_tTT`) | Load a 32-token page only when hit ratio ≥ TT/100, otherwise drop | P=32, TT=25/50/75 |
 
-For Method 1 / Method 2 to differ from Block Fetch, `P` must be a strict
-multiple of `block_size`. Method 1 is lossless (recall=1.0 always);
-Method 2 may drop content (recall < 1).
+All three policies use `P=32` to align with sglang's configured
+`page_size=32`. Method 1 is lossless (always keeps all selected blocks);
+Method 2 may drop content if a page's hit ratio falls below the threshold.
 
 **This is real, not simulation**: an in-flight hook in
 [`flashinfer.py`](vortex_torch/engine/sgl/attention_backend/flashinfer.py)
@@ -25,18 +25,32 @@ transformed indices.
 ## Headline result
 
 On vortex_torch's `block_sparse_attention` algorithm (block_size=4) +
-RULER 2-sample subset, **Block Fetch is the fastest** at 7.88 tok/s,
-while every Method 1/2 variant is ~7.5–9.0% slower. All policies preserve
-accuracy=1.0 on this task.
+RULER 2-sample subset, **Block Fetch is the fastest** at 7.75 tok/s.
+All Method 1/2 variants are slower and preserve accuracy=1.0. The slowest
+is Method 2 with threshold=0.75 — the Python overhead of computing the
+threshold filter dominates over any savings from dropping pages.
+
+All policies use **P=32** to match the configured sglang `page_size=32`,
+so the "page" unit is consistent across the framework and the policy logic.
 
 | Policy | Accuracy | Throughput (tok/s) | vs Block Fetch |
 |---|---|---|---|
-| **block_fetch** | 1.0 | **7.88** | — |
-| method1_p16 | 1.0 | 7.26 | −7.9% |
-| method1_p32 | 1.0 | 7.29 | −7.5% |
-| method2_p16_t50 | 1.0 | 7.22 | −8.4% |
-| method2_p32_t50 | 1.0 | 7.24 | −8.1% |
-| method2_p32_t25 | 1.0 | 7.17 | −9.0% |
+| **block_fetch** | 1.0 | **7.75** | — |
+| method2_p32_t25 | 1.0 | 7.45 | −3.9% |
+| method1_p32 | 1.0 | 7.26 | −6.3% |
+| method2_p32_t50 | 1.0 | 7.25 | −6.5% |
+| **method2_p32_t75** | 1.0 | 6.14 | **−20.8%** |
+
+### Why t=0.75 is the slowest
+
+At `threshold=0.75` with `P=32` (8 blocks per page), a P-page is kept only
+when ≥6 of its 8 blocks are selected. Real block_sparse_attention's
+selection pattern is sparser than that — most P-pages have 1–3 hits and
+get dropped. When all rows drop, the fallback kicks in (keep the first
+P-page to avoid empty FlashInfer indices). The transformation does extra
+work to filter and write a tiny set, dominated by CPU↔GPU roundtrip
+overhead per attention call. The kernel time savings (fewer blocks to
+fetch) don't recover this cost.
 
 **Caveat**: the policy transformation hook runs in Python (CPU↔GPU
 roundtrip per attention call), which contributes most of the ~8% slowdown.
@@ -72,8 +86,9 @@ PYTHON=/path/to/env/bin/python bash run_method_comparison.sh
 ```
 
 What the script does:
-1. For each of 6 policies (`block_fetch`, `method1_p16`, `method1_p32`,
-   `method2_p16_t50`, `method2_p32_t50`, `method2_p32_t25`):
+1. For each of 5 policies (all at P=32 to match sglang `page_size=32`):
+   `block_fetch`, `method1_p32`, `method2_p32_t25`, `method2_p32_t50`,
+   `method2_p32_t75`:
    - Sets `VORTEX_POLICY` env var to that policy
    - Runs RULER on a 2-prompt subset with vortex_torch's
      `block_sparse_attention` algorithm
