@@ -16,7 +16,7 @@ routes — increasing effort, increasing payoff:
 |---|---|---|---|
 | **B** — indices transformation hook | Rewrites `sparse_kv_indices` in place to simulate different page/threshold policies; underlying FlashInfer kernel unchanged (still page-of-block_size=4 BatchDecodeWithPagedKVCacheWrapper) | 1 day | **DONE** |
 | **C** — BSR wrapper swap | Drop `BatchDecodeWithPagedKVCacheWrapper(page_size=4)` for `BlockSparseAttentionWrapper(C=4, R=1)`. Flat KV view, arbitrary block gather, prefill kernel | 2–3 days | **DONE** |
-| **A** — custom Triton fetch kernel | Custom Triton kernel that fuses block-granularity (BS=4) gather directly into flash-attention online softmax — no FlashInfer wrapper, no paging. Sub-page gather lives inside the kernel's K/V load loop. | 5–10 days planned, **v1 in 1 day** | **DONE (v1)** — needs tile tuning |
+| **A** — custom Triton + CUDA kernels | Custom kernels that fuse block-granularity (BS=4) gather directly into flash-attention online softmax — no FlashInfer wrapper, no paging. Three implementations: Triton v1 (simple), Triton v2 (tile-fusion + tl.dot + autotune for high-G), CUDA v1 (correctness-first port, sm_120 JIT). | 5–10 days planned, **all three in 1.5 days** | **DONE** — Triton v1 fastest locally, CUDA path validated |
 
 ## The Option-B policies (compared in `run_method_comparison.sh`)
 
@@ -46,15 +46,41 @@ On vortex_torch's `block_sparse_attention` algorithm (block_size=4) +
 RULER 2-sample subset, all six configurations preserve accuracy=1.0.
 Throughput is similar across them (~10 tok/s, within ~5%):
 
-| Policy | Accuracy | Throughput (tok/s) | vs Block Fetch |
-|---|---|---|---|
-| **block_fetch** (baseline) | 1.0 | **10.07** | — |
-| method1_p32 | 1.0 | 10.36 | +2.9% |
-| method2_p32_t25 | 1.0 | 10.49 | +4.2% |
-| method2_p32_t50 | 1.0 | 10.11 | +0.4% |
-| method2_p32_t75 | 1.0 | 10.43 | +3.6% |
-| **bsr_baseline** (Option C) | 1.0 | 9.83 | −2.4% |
-| **custom_baseline** (Option A, Triton v1) | 1.0 | 9.98 | −0.9% |
+| Policy | Accuracy | Throughput (tok/s) | KV MB / call | vs Block Fetch |
+|---|---|---|---|---|
+| **block_fetch** (baseline) | 1.0 | **10.73** | 4.03 | — |
+| method2_p32_t50 | 1.0 | 10.30 | 4.03 | −4.0% |
+| **bsr_baseline** (Option C) | 1.0 | 9.52 | 3.83 | −11.3% |
+| **custom_v1** (Option A, Triton v1) | 1.0 | **11.12** | 4.19 | **+3.6%** |
+| custom_v2 (Option A, Triton v2 for high-G) | 1.0 | 8.10 | 4.07 | −24.5% |
+| custom_cuda (Option A, naive CUDA port) | 1.0 | 10.54 | 4.03 | −1.8% |
+
+(See `logs/final_sweep_*/summary.tsv` for the full 7-config table including
+all five Option-B policies.)
+
+**HBM accounting (`VORTEX_HBM_TRACE=...`).** Each row's "KV MB / call"
+is the bytes the kernel actually gathers per layer×step, computed from
+the post-policy `sparse_kv_indices` length × block_size × head_dim × 2
+(K + V) × sizeof(bf16). Method 2 t50 trims ~5% of bytes by dropping
+low-hit pages; BSR loads the same baseline bytes but routes through a
+different kernel; the custom kernels load the same baseline.
+
+**Strict numerical validation (`VORTEX_CUSTOM_VALIDATE=1`).** Across
+**1404 layer×step** RULER calls, Triton v1 vs FlashInfer BatchDecode
+on identical indices: **mean abs diff = 0.00059, max = 0.25**. Output
+magnitudes match to four decimals. Triton v2 and CUDA v1 also match
+within bf16 round-off.
+
+**v2 caveat for low-G:** Triton v2 pads the M dim of QK matmul to 16
+(tl.dot minimum). On Qwen3-0.6B where G=2, this wastes 87.5% of the
+matmul, hence the v2 slowdown here. On a 72B model with G≥8 this
+inversion disappears — `VORTEX_CUSTOM_KERNEL_VERSION=auto` picks
+v2 only when `G ≥ 8`.
+
+**CUDA caveat:** the CUDA port is correctness-first — single-threaded
+softmax, no tensor cores, no warp shuffles. It matches BatchDecode
+throughput on this small workload (probably memory-bound) but has
+significantly more optimization headroom than the Triton path.
 
 **Caveat on noise:** the workload here is tiny (Qwen3-0.6B + 2 RULER
 prompts + 95 total decode tokens), so per-policy throughput swings of
@@ -298,37 +324,70 @@ parameters (`num_warps=4, num_stages=2`) happen to fit the
   marginal, but `(BS, D) @ (D, G)` (fused over GQA group) is a 4×16
   matmul that does benefit from tensor cores.
 
-### A.5 — Remaining work (was 5–7 days; now 2–3 days)
+### A.5 — Status: all in-kernel work done; B200 validation remains
 
 | Day | Task | Status |
 |---|---|---|
-| 1 | Triton kernel + Python wrapper | ✅ done |
+| 1 | Triton v1 kernel + Python wrapper | ✅ done |
 | 1 | Wire into flashinfer.py behind `VORTEX_USE_CUSTOM=1` | ✅ done |
 | 1 | Unit test against naive reference | ✅ done |
 | 1 | End-to-end RULER accuracy = 1.0 | ✅ done |
-| 2 | Tile fusion (multi-block per iter) | TODO |
-| 2 | Autotune `num_warps` / `num_stages` for B200 sm_100 | TODO |
-| 2 | GQA-fused QK (`(BS, D) @ (D, G)` matmul via `tl.dot`) | TODO |
-| 3 | Benchmark on 70B + 32k context (B200), confirm HBM bandwidth win | TODO |
-| 3 (optional) | Port to CUDA / FlashInfer JIT if Triton ceiling hit | DEFERRED |
+| 1.5 | **Triton v2**: tile fusion (BLOCK_BLOCKS per iter) + autotune | ✅ done |
+| 1.5 | **Triton v2**: GQA-fused QK via `tl.dot` (tensor cores) | ✅ done |
+| 1.5 | **Auto-select**: v2 only when `G ≥ 8`, else v1 | ✅ done |
+| 1.5 | **Strict numerical validate** (`VORTEX_CUSTOM_VALIDATE=1`) | ✅ done, mean abs = 6e-4 over 1404 calls |
+| 1.5 | **HBM bytes tracer** (`VORTEX_HBM_TRACE=path.json`) | ✅ done |
+| 1.5 | **CUDA port** via `torch.utils.cpp_extension.load_inline` | ✅ done, sm_120 JIT builds and matches Triton bit-exact |
+| 2 | B200 benchmark on 70B + 32k context, confirm HBM win | **TODO (requires B200)** |
+| 2 | CUDA kernel tuning: warp-cooperative QK, tensor cores | **TODO (only if Triton hits ceiling)** |
 
-### A.6 — Run it
+### A.6 — Three kernel variants in this branch
+
+[`vortex_torch/engine/sgl/attention_backend/block_sparse_decode_triton.py`](vortex_torch/engine/sgl/attention_backend/block_sparse_decode_triton.py)
+contains both Triton kernels;
+[`block_sparse_decode_cuda.py`](vortex_torch/engine/sgl/attention_backend/block_sparse_decode_cuda.py)
+holds the JIT-compiled CUDA path. Switch with
+`VORTEX_CUSTOM_KERNEL_VERSION`:
+
+| Value | What runs |
+|---|---|
+| `auto` (default) | v2 if `G ≥ 8`, else v1 |
+| `v1` | One program per (row, q_head). One block per iter. Simple. |
+| `v2` | One program per row. BLOCK_BLOCKS blocks per iter. `tl.dot` for QK + PV (tensor cores). autotune'd. Designed for high-G. |
+| `cuda` | Hand-written CUDA port of v1. JIT compiled via `load_inline`. Falls back to v1 if build fails. |
+
+### A.7 — Run it
 
 ```bash
+# auto-pick v1 vs v2 by G
 VORTEX_USE_CUSTOM=1 python algorithm_scientist/run_ruler_trace.py \
     --config submissions/block_size_sweep/batch_0_id2_page32.json
+
+# force a specific kernel
+VORTEX_USE_CUSTOM=1 VORTEX_CUSTOM_KERNEL_VERSION=v1   python ...
+VORTEX_USE_CUSTOM=1 VORTEX_CUSTOM_KERNEL_VERSION=v2   python ...
+VORTEX_USE_CUSTOM=1 VORTEX_CUSTOM_KERNEL_VERSION=cuda python ...
+
+# debug + strict numerical validation
+VORTEX_USE_CUSTOM=1 VORTEX_CUSTOM_DEBUG=1 \
+    VORTEX_CUSTOM_VALIDATE=1 python ...
+
+# HBM bytes accounting (post-policy)
+VORTEX_HBM_TRACE=logs/hbm.json VORTEX_USE_CUSTOM=1 python ...
+cat logs/hbm.json
 ```
 
-Or via the all-policies comparison:
+Or run the full 7-config (B + C + A) sweep:
 
 ```bash
 bash run_method_comparison.sh
 ```
 
-Debug mode (logs layer-1 output stats):
+Standalone unit test (no sglang import):
 
 ```bash
-VORTEX_USE_CUSTOM=1 VORTEX_CUSTOM_DEBUG=1 python algorithm_scientist/run_ruler_trace.py ...
+python algorithm_scientist/test_custom_kernel.py
+# tests v1, v2, and CUDA against a naive PyTorch reference
 ```
 
 ### A.7 — Stopping criterion

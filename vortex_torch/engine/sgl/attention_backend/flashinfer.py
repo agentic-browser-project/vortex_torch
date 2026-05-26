@@ -711,6 +711,17 @@ class VortexFlashInferBackend(AttentionBackend):
                     policy_str=_policy,
                 )
 
+            # PATCH (HBM accounting): tally bytes that the kernel will gather.
+            # Records *post-policy* indices count — the actual HBM load size.
+            from vortex_torch.engine.sgl.hbm_trace import record as _hbm_record
+            _hbm_record(
+                indptr=self.ctx.metadata.sparse_kv_indptr,
+                n_rows=q.shape[0],
+                block_size=self.block_size,
+                head_dim=self.head_dim,
+                bytes_per_elem=2,  # bfloat16
+            )
+
             # Sparse attention compute
             if os.environ.get("VORTEX_USE_CUSTOM") == "1":
                 # Option A: custom Triton kernel — gather + flash-attention
@@ -736,6 +747,26 @@ class VortexFlashInferBackend(AttentionBackend):
                     print(f"[CUSTOM layer={layer.layer_id}] q.shape={tuple(q.shape)} cache_k.shape={tuple(cache['k'].shape)} bsr_M={bsr_M} total_indices={total}", file=sys.stderr)
                     print(f"[CUSTOM layer={layer.layer_id}] o stats: mean={o.float().mean().item():.4f} std={o.float().std().item():.4f} "
                           f"min={o.float().min().item():.4f} max={o.float().max().item():.4f} nans={torch.isnan(o).any().item()}", file=sys.stderr)
+
+                # Strict numerical validation: also run BatchDecode on the SAME
+                # indices and compare. Costs ~2x compute on this layer, so gate
+                # behind an env var.
+                if os.environ.get("VORTEX_CUSTOM_VALIDATE") == "1":
+                    import sys as _sys
+                    o_ref = self.forward_metadata.decode_wrappers[1].forward(
+                        q, (cache_k, cache_v),
+                        sm_scale=layer.scaling, logits_soft_cap=layer.logit_cap,
+                        k_scale=layer.k_scale, v_scale=layer.v_scale,
+                    )
+                    _diff = (o.float() - o_ref.float()).abs()
+                    print(
+                        f"[VALIDATE layer={layer.layer_id}] "
+                        f"triton vs batchdecode  max={_diff.max().item():.6f}  "
+                        f"mean={_diff.mean().item():.6f}  "
+                        f"|o_tri|={o.float().abs().mean().item():.4f}  "
+                        f"|o_ref|={o_ref.float().abs().mean().item():.4f}",
+                        file=_sys.stderr,
+                    )
             elif os.environ.get("VORTEX_USE_BSR") == "1":
                 # Option C: use BSR wrapper with flat KV view (no page concept).
                 # Must plan BSR PER LAYER (after indexer fills indices), because
