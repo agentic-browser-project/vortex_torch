@@ -665,6 +665,20 @@ class VortexFlashInferBackend(AttentionBackend):
                         "last_page_len": _last_page_len,
                     }) + "\n")
 
+            # PATCH (block_size_sweep): apply Method 1 / Method 2 fetch policy
+            # by rewriting sparse_kv_indptr/indices in place before attention.
+            _policy = os.environ.get("VORTEX_POLICY")
+            if _policy and _policy != "block_fetch":
+                from vortex_torch.engine.sgl.policy_transform import apply_policy
+                apply_policy(
+                    indptr=self.ctx.metadata.sparse_kv_indptr,
+                    indices_buf=self.forward_metadata.decode_wrappers[1]._paged_kv_indices_buf,
+                    num_kv_heads=self.num_kv_heads,
+                    block_size=self.block_size,
+                    num_blocks_per_page=self.num_blocks_per_page,
+                    policy_str=_policy,
+                )
+
             # Sparse attention compute
             o = self.forward_metadata.decode_wrappers[1].forward(
                 q,

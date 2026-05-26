@@ -1,145 +1,195 @@
 # bench1: Block Fetch vs Method 1 vs Method 2
 
-A **simulation analysis** comparing three KV-fetch policies on real selection
-traces produced by vortex_torch's `block_sparse_attention` upstream algorithm.
+A **real** comparison (not simulation) of three KV-fetch policies on
+vortex_torch's `block_sparse_attention` upstream, with `block_size=4`
+and `page_size=32`.
 
 ## The three policies
 
-| Policy | What it does | At what granularity |
+| Policy | What it does | Granularity |
 |---|---|---|
-| **Block Fetch** | Load only the selected blocks (vortex_torch's actual current behavior) | block_size (= 16) |
-| **Method 1** | If any selected block falls inside a page, load the whole page | page_size > block_size |
-| **Method 2** | Load a page only when its hit ratio ≥ threshold; otherwise drop entire page | page_size > block_size |
+| **Block Fetch** | Load only the selected 4-token blocks (vortex_torch's actual current behavior) | block_size=4 |
+| **Method 1** (`method1_pP`) | If any selected block falls inside a P-token page, load ALL blocks of that page | P=16 or 32 |
+| **Method 2** (`method2_pP_tTT`) | Load a P-page only when hit ratio ≥ TT/100, otherwise drop | P=16/32, TT=25/50/75 |
 
-For Method 1 and Method 2 to differ from Block Fetch, `page_size` must be
-strictly larger than `block_size`. We sweep `page_size ∈ {32, 64, 128, 256}`.
+For Method 1 / Method 2 to differ from Block Fetch, `P` must be a strict
+multiple of `block_size`. Method 1 is lossless (recall=1.0 always);
+Method 2 may drop content (recall < 1).
 
-This is **simulation only**: vortex_torch actually runs Block Fetch (page = block
-= 16); the analyzer computes what Method 1 / Method 2 would have loaded
-instead, using the real selection traces. No alternative fetch is actually
-executed.
+**This is real, not simulation**: an in-flight hook in
+[`flashinfer.py`](vortex_torch/engine/sgl/attention_backend/flashinfer.py)
+rewrites the `sparse_kv_indices` buffer after the indexer fills it but
+before the attention kernel runs. The attention call actually sees the
+transformed indices.
 
 ## Headline result
 
-After running, see `logs/trace_policy_analysis.csv`. Block Fetch wins:
-`coverage = 1.0`, `waste = 0.0`, smallest `loaded MB`. Method 1 over-fetches
-(waste grows with page_size); Method 2 either matches Method 1 (low threshold)
-or catastrophically drops content (high threshold), because the upstream
-algorithm's selection is already block-aligned in small clusters.
+On vortex_torch's `block_sparse_attention` algorithm (block_size=4) +
+RULER 2-sample subset, **Block Fetch is the fastest** at 7.88 tok/s,
+while every Method 1/2 variant is ~7.5–9.0% slower. All policies preserve
+accuracy=1.0 on this task.
 
----
+| Policy | Accuracy | Throughput (tok/s) | vs Block Fetch |
+|---|---|---|---|
+| **block_fetch** | 1.0 | **7.88** | — |
+| method1_p16 | 1.0 | 7.26 | −7.9% |
+| method1_p32 | 1.0 | 7.29 | −7.5% |
+| method2_p16_t50 | 1.0 | 7.22 | −8.4% |
+| method2_p32_t50 | 1.0 | 7.24 | −8.1% |
+| method2_p32_t25 | 1.0 | 7.17 | −9.0% |
+
+**Caveat**: the policy transformation hook runs in Python (CPU↔GPU
+roundtrip per attention call), which contributes most of the ~8% slowdown.
+A production implementation would move this to a CUDA kernel and shrink
+the gap. The relative ordering (Block Fetch fastest) is still meaningful,
+but the absolute throughput delta overstates the true HBM-bandwidth cost.
 
 ## Setup on B200
 
-1. **Install vortex_torch + sglang** per the upstream install instructions
+1. **Install vortex_torch + sglang** per upstream install instructions
    (~25 min compute + 15min–2h model download).
-2. **Use a 70B-class model** (e.g. `Qwen/Qwen2.5-72B-Instruct` or
-   `meta-llama/Llama-3.1-70B-Instruct`). Set it via
-   `"model_path": "..."` in `submissions/block_size_sweep/batch_0_id0.json`,
-   or by editing `MODEL_PATH` in
-   [`vortex_torch/engine/sgl/api.py:22`](vortex_torch/engine/sgl/api.py#L22).
-3. **Revert the four sm_120 (RTX 5060 Ti / Blackwell) workarounds** from this
-   branch — B200 has full sm_100 sgl-kernel binaries and doesn't need them:
-
-   | File | What to revert |
-   |---|---|
-   | `third_party/sglang/v0.4.9/sglang/python/sglang/srt/layers/layernorm.py` | The `# PATCH (block_size_sweep, sm_120)` block inside `RMSNorm.forward_cuda` — restore the original sgl-kernel `fused_add_rmsnorm` / `rmsnorm` body |
-   | `third_party/sglang/v0.4.9/sglang/python/sglang/srt/layers/rotary_embedding.py` | Same pattern in `forward_cuda` — restore the sgl-kernel `apply_rope_with_cos_sin_cache_inplace` path |
-   | `third_party/sglang/v0.4.9/sglang/python/sglang/srt/layers/activation.py` | Same pattern in `SiluAndMul.forward_cuda` — restore the sgl-kernel `silu_and_mul` call |
-   | `submissions/block_size_sweep/batch_0_id0.json` | Delete `"disable_cuda_graph": true` and `"sampling_backend": "pytorch"` |
-
----
+2. **Pick a 70B-class model** (e.g. `Qwen/Qwen2.5-72B-Instruct`). Set
+   `"model_path"` in the JSON. (Default in this branch is
+   `Qwen/Qwen3-0.6B` — chosen because of shared-GPU constraints
+   during development; B200 should use a larger model.)
+3. **Increase `mem_fraction_static`** back to 0.8+ (we set it to 0.35
+   because of a co-tenant on our development GPU). With B200's 192 GB,
+   even 70B fits comfortably.
+4. **Revert four sm_120 (RTX 5060 Ti) workarounds** — see "Local
+   environment hacks" section below.
 
 ## Run
 
 ```bash
-bash run_all_experiments.sh
+bash run_method_comparison.sh
 ```
 
-Expected time on B200 + 70B + warm caches: **~5–10 min** (2-sample RULER run
-+ analyzer).
+Expected time on B200: ~10–15 min (6 policies × ~2 min each).
 
-To use your own Python interpreter:
+Override Python interpreter:
 ```bash
-PYTHON=/path/to/env/bin/python bash run_all_experiments.sh
+PYTHON=/path/to/env/bin/python bash run_method_comparison.sh
 ```
 
-The script does two steps:
+What the script does:
+1. For each of 6 policies (`block_fetch`, `method1_p16`, `method1_p32`,
+   `method2_p16_t50`, `method2_p32_t50`, `method2_p32_t25`):
+   - Sets `VORTEX_POLICY` env var to that policy
+   - Runs RULER on a 2-prompt subset with vortex_torch's
+     `block_sparse_attention` algorithm
+2. Aggregates `(accuracy, throughput)` into a single TSV summary
 
-1. **Dump traces** — runs RULER (2 prompts) with vortex_torch's
-   `block_sparse_attention`, captures every layer's `sparse_kv_indices`
-   into `logs/traces/`.
-2. **Analyze traces** — computes Block Fetch / Method 1 / Method 2 metrics
-   for every (request, kv_head) selection across all decode steps; aggregates
-   into `logs/trace_policy_analysis.csv`.
+## Output
 
----
+`logs/method_comparison_<timestamp>/`:
+- `summary.tsv` — one row per policy, with `accuracy`, `throughput`, status
+- `<policy>.out` / `<policy>.err` — per-policy logs
+- `<policy>_result.json` — full RULER summary per policy
 
-## Output: `logs/trace_policy_analysis.csv`
+### How to read the results table
 
-| column | meaning |
+| Column | Meaning |
 |---|---|
-| **method** | `Block Fetch` / `Method 1` / `Method 2` |
-| **P** | For Method 1/2: the page_size (the "load whole or drop" decision unit; > block_size). For Block Fetch: equal to block_size (= 16). |
-| **threshold** | Method 2 only: a page is loaded only when `(selected_blocks_in_page / blocks_per_page) ≥ threshold`. Otherwise dropped (its selected blocks contribute nothing to attention). |
-| **count** | Number of (request, kv_head) selections aggregated |
-| **cov_mean** | Mean **coverage**: fraction of needed tokens that were actually loaded. 1.0 = no loss. Block Fetch and Method 1 are always 1.0 by construction; Method 2 may be < 1.0. |
-| **cov_p50 / cov_p10** | 50th / 10th percentile of coverage across selections (shows the variability) |
-| **waste_mean** | Mean **waste**: fraction of loaded bytes that were not needed. 0.0 = perfect. Block Fetch is 0; Method 1 = `1 − block_size/P`. |
-| **waste_p50** | Median waste |
-| **N_mean** | Mean number of needed tokens per (request, kv_head). With default vortex_torch config this is ~511. |
-| **loadMB_mean** | Mean megabytes actually loaded from HBM per (request, kv_head). This is the bandwidth cost. |
+| **policy** | The fetch policy name (e.g. `method1_p32` = Method 1 with page_size=32) |
+| **accuracy** | RULER substring-match accuracy: did the model find the magic UUID? Range [0, 1] |
+| **throughput** | Tokens/sec generated end-to-end (includes prefill, decode, sampling) |
+| **rc** | Return code (`OK` / `FAIL`) |
 
-### How to read the table
+Expected pattern: Block Fetch ≥ Method 1 ≥ Method 2 in throughput; all
+should preserve accuracy on this easy needle-in-haystack task. If
+accuracy drops for Method 2 at high threshold, the policy is dropping
+too much context.
 
-- **Block Fetch row**: the baseline. `cov_mean = 1.0`, `waste_mean = 0.0`,
-  smallest `loadMB_mean`. This is what vortex_torch already does.
-- **Method 1 rows** (one per page_size): `cov_mean = 1.0` always; `waste_mean` and
-  `loadMB_mean` grow with `P`. Tells you "if you grouped blocks into pages of
-  size P, how much would you over-fetch".
-- **Method 2 rows** (one per page_size × threshold): `cov_mean` falls off a
-  cliff once `threshold × (P/block_size)` exceeds the average cluster size in
-  the trace. Below the cliff it equals Method 1; above the cliff it's zero.
+## Configuration
 
-The expected pattern (and what we observed on the RTX 5060 Ti development run):
-Block Fetch is strictly the best on this workload because the upstream
-algorithm's selection is already block-aligned in small (~2–4 block) clusters,
-which leaves no room for either coarser fetch or selective dropping to win.
+Currently used: [`submissions/block_size_sweep/batch_0_id2_page32.json`](submissions/block_size_sweep/batch_0_id2_page32.json)
 
----
+| Key | Value | Why |
+|---|---|---|
+| `vortex_block_size` | 4 | Indexer selects 4-token chunks (finest viable; <4 would hit kernel limits) |
+| `page_size` | 32 | sglang's internal page is 32 (= 8 blocks/page). Note: this overrides the default `page_size=vortex_block_size` and exercises the `page > block` framework path |
+| `vortex_max_seq_lens` | 6144 | RULER input ~4500 tokens fits comfortably |
+| `vortex_topk_val` | 116 | 116 blocks × 4 tokens = 464 selected tokens per (req, kv_head) |
+| `vortex_block_reserved_bos` | 4 | Always keep first 16 tokens (4 blocks) |
+| `vortex_block_reserved_eos` | 8 | Always keep last 32 tokens (8 blocks) |
+| `mem_fraction_static` | 0.35 | Tight on co-tenant GPU; on B200 raise to 0.8+ |
+| `model_path` | `Qwen/Qwen3-0.6B` | Tight on memory; on B200 use 70B model |
 
-## Reproducing pieces individually
+## How the policies are actually implemented
 
-Just dump traces:
+The hook lives in
+[`vortex_torch/engine/sgl/attention_backend/flashinfer.py`](vortex_torch/engine/sgl/attention_backend/flashinfer.py)
+between the indexer call and the attention call. It reads `VORTEX_POLICY`,
+calls `apply_policy()` from
+[`vortex_torch/engine/sgl/policy_transform.py`](vortex_torch/engine/sgl/policy_transform.py)
+which rewrites `sparse_kv_indptr` and the indices buffer in place.
+
+`apply_policy()` logic, per (request, kv_head) row:
+1. Decode each physical block_id into a (kv_head-local) logical block index
+2. Group logical blocks into P-pages (one P-page = `P / block_size`
+   consecutive logical blocks)
+3. **Method 1**: keep every P-page that has ≥1 selected block; expand
+   to all its blocks
+4. **Method 2**: keep P-pages with hit ratio ≥ threshold; expand
+   to all blocks; on empty selection, fall back to first P-page (to
+   avoid crashing FlashInfer)
+5. Convert expanded logical block list back to physical block_ids
+6. Write back the new indices + indptr
+
+FlashInfer is **not** modified — it still uses
+`BatchDecodeWithPagedKVCacheWrapper` with `page_size=block_size=4`.
+The "policy" lives entirely in the indices rewrite.
+
+## Trace-driven analysis (companion, simulation-based)
+
+If you want to analyze policies on a wider grid of (P, threshold) values
+without running RULER for each, use the trace-driven simulator:
+
 ```bash
+# Step 1: dump traces from a single RULER run
 VORTEX_DUMP_TRACE_DIR=logs/traces python algorithm_scientist/run_ruler_trace.py \
-    --config submissions/block_size_sweep/batch_0_id0.json
-```
+    --config submissions/block_size_sweep/batch_0_id2_page32.json
 
-Just analyze existing traces (try different page sizes / thresholds):
-```bash
+# Step 2: simulate policies on the traces (no model needed)
 python algorithm_scientist/trace_policy_analyzer.py \
     --trace-dir logs/traces \
-    --page-sizes 32 64 128 256 \
+    --page-sizes 16 32 64 128 \
     --thresholds 0.10 0.25 0.50 0.75 \
     --out-csv logs/trace_policy_analysis.csv
 ```
 
----
+Caveat: simulation gives `coverage / waste / loaded_MB` only — it does
+not measure real accuracy or kernel time (because attention never runs
+with the simulated policy). For real numbers, use `run_method_comparison.sh`.
 
-## Other files in this branch (not used by the main experiment)
+## Local environment hacks (RTX 5060 Ti / Blackwell sm_120)
 
-These were exploratory experiments from earlier iterations. They are not
-called by `run_all_experiments.sh` and can be ignored or deleted:
+This branch was developed on a shared single RTX 5060 Ti (sm_120,
+Blackwell). The standard sglang/flashinfer pinned versions don't ship
+sm_120 binaries. These patches enable inference but should be **reverted
+on B200**:
 
-- `bench_decode_bandwidth_notc.py`, `run_bandwidth_sweep*.sh` — hardware
-  bandwidth profiling (establishes that vortex_torch's default workload is
-  launch-overhead-bound)
+| File | Change | Revert on B200 |
+|---|---|---|
+| `third_party/sglang/.../layernorm.py` | `RMSNorm.forward_cuda` → `forward_native` | Restore sgl-kernel CUDA body |
+| `third_party/sglang/.../rotary_embedding.py` | Same fallback for RoPE | Restore original |
+| `third_party/sglang/.../activation.py` | Same for SiluAndMul | Restore original |
+| JSON config | `disable_cuda_graph: true`, `sampling_backend: pytorch` | Remove both keys |
+| JSON config | `mem_fraction_static: 0.35`, `model_path: Qwen/Qwen3-0.6B` | Raise mem_fraction to 0.8+, switch to 70B model |
+
+The sm_120 patches make absolute throughput numbers unrepresentative of
+B200 performance (native PyTorch fallbacks are slower than sgl-kernel
+CUDA). However, the **relative** comparison across policies remains valid
+because every policy uses the same fallback overhead.
+
+## Other files in this branch (not used by run_method_comparison.sh)
+
 - `algorithm_scientist/page_policy_sweep.py` — synthetic-distribution
-  comparison of the three policies (random vs clustered token patterns;
-  superseded by the real-trace analysis above)
-- `algorithm_scientist/tpot_microbench.py` — per-decode-step latency measurement
-- `submissions/block_size_sweep/batch_0_id{1,2,3}.*` — additional submission
-  variants at block_size ∈ {8, 4, 1}; only `id0` (block_size=16) is used
-- `run_aime24_sequential.sh`, `run_remaining_ruler.sh`, `run_env.sh` — earlier
-  orchestration scripts
+  policy comparison (superseded by the real comparison here)
+- `algorithm_scientist/trace_policy_analyzer.py` — trace-driven simulator
+  (companion to this experiment, mentioned above)
+- `algorithm_scientist/tpot_microbench.py` — per-decode-step latency
+- `bench_decode_bandwidth_notc.py`, `run_bandwidth_sweep*.sh` — HBM
+  bandwidth profiling
+- `submissions/block_size_sweep/batch_0_id{0,1,2,3}.*` — earlier
+  block_size variants
