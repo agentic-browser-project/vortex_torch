@@ -26,23 +26,31 @@ CONFIG="submissions/block_size_sweep/batch_0_id2_page32.json"
 LOGDIR="logs/method_comparison_$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$LOGDIR"
 
+# label  : run identifier and log filename prefix
+# env vars: space-separated KEY=VALUE pairs that switch attention backend / policy
+# - block_fetch / method1_p32 / method2_p32_t*: BatchDecode wrapper + index rewrite
+# - bsr_baseline                              : BlockSparseAttention wrapper (Option C)
 POLICIES=(
-    "block_fetch"
-    "method1_p32"
-    "method2_p32_t25"
-    "method2_p32_t50"
-    "method2_p32_t75"
+    "block_fetch:VORTEX_POLICY=block_fetch"
+    "method1_p32:VORTEX_POLICY=method1_p32"
+    "method2_p32_t25:VORTEX_POLICY=method2_p32_t25"
+    "method2_p32_t50:VORTEX_POLICY=method2_p32_t50"
+    "method2_p32_t75:VORTEX_POLICY=method2_p32_t75"
+    "bsr_baseline:VORTEX_USE_BSR=1"
 )
 
 SUMMARY="$LOGDIR/summary.tsv"
 echo -e "policy\taccuracy\tthroughput\trc" > "$SUMMARY"
 
-for policy in "${POLICIES[@]}"; do
+for entry in "${POLICIES[@]}"; do
+    policy="${entry%%:*}"
+    envspec="${entry#*:}"
     echo ""
     echo "==================== $policy ($(date +%H:%M:%S)) ===================="
+    echo "  env: $envspec"
     # Clean previous summary so we always read the latest run, not a stale one
     rm -rf summary_ruler_submissions_trace/block_size_sweep/batch_0_id2_page32/
-    CUDA_VISIBLE_DEVICES=0 VORTEX_POLICY="$policy" \
+    CUDA_VISIBLE_DEVICES=0 env $envspec \
         "$PYTHON" algorithm_scientist/run_ruler_trace.py \
         --config "$CONFIG" \
         > "$LOGDIR/${policy}.out" 2> "$LOGDIR/${policy}.err"

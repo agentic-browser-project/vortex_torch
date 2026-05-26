@@ -43,6 +43,7 @@ if is_flashinfer_available():
         BatchDecodeWithPagedKVCacheWrapper,
         BatchPrefillWithPagedKVCacheWrapper,
         BatchPrefillWithRaggedKVCacheWrapper,
+        BlockSparseAttentionWrapper,
     )
     from flashinfer.cascade import merge_state
     from flashinfer.decode import _get_range_buf, get_seq_lens
@@ -217,6 +218,13 @@ class VortexFlashInferBackend(AttentionBackend):
                     use_tensor_cores=self.decode_use_tensor_cores,
                 ),
         ]
+
+        # PATCH (block_size_sweep, Option C): an alternative sparse-attention
+        # wrapper that uses BSR (flat KV + arbitrary block gather) instead of
+        # paged decode. Activated when env var VORTEX_USE_BSR=1 is set.
+        # The BSR path goes through FA2/FA3 prefill kernel (not decode-specialized),
+        # so it may be slower at q_len=1 — that's exactly what we're benchmarking.
+        self.bsr_wrapper = BlockSparseAttentionWrapper(self.workspace_buffer)
         
         self.plan_decode = get_decode_planner(model_runner.server_args.vortex_schedule_policy)
         self.plan_prefill = get_prefill_planner()
@@ -323,6 +331,18 @@ class VortexFlashInferBackend(AttentionBackend):
                 q_data_type=self.q_data_type,
                 kv_data_type=self.data_type,
             )
+
+            # PATCH (Option C): BSR-wrapper plan is NOT called here. Unlike
+            # BatchDecodeWithPagedKVCacheWrapper (which captures the indices
+            # buffer pointer at __init__ and re-reads at run-time),
+            # BlockSparseAttentionWrapper.plan() snapshots indices values at
+            # plan time. The indexer fills sparse_kv_indices per-layer inside
+            # forward_decode, so we must plan there (right before BSR.run).
+            # We pre-record M/N here so forward_decode can plan quickly.
+            if os.environ.get("VORTEX_USE_BSR") == "1":
+                self._bsr_M = bs * self.num_kv_heads
+                self._bsr_N = self.ctx.metadata.sparse_kv_indices.numel() * self.block_size
+
             self.forward_metadata = DecodeMetadata([self.decode_wrappers[0], self.decode_wrappers[1]])
 
         elif forward_batch.forward_mode.is_extend():
@@ -680,14 +700,47 @@ class VortexFlashInferBackend(AttentionBackend):
                 )
 
             # Sparse attention compute
-            o = self.forward_metadata.decode_wrappers[1].forward(
-                q,
-                (cache_k, cache_v),
-                sm_scale=layer.scaling,
-                logits_soft_cap=layer.logit_cap,
-                k_scale=layer.k_scale,
-                v_scale=layer.v_scale,
-            )
+            if os.environ.get("VORTEX_USE_BSR") == "1":
+                # Option C: use BSR wrapper with flat KV view (no page concept).
+                # Must plan BSR PER LAYER (after indexer fills indices), because
+                # BlockSparseAttentionWrapper snapshots indices values at plan
+                # time and has no buffer-pointer reuse mode.
+                self.bsr_wrapper.plan(
+                    indptr=self.ctx.metadata.sparse_kv_indptr[:self._bsr_M+1],
+                    indices=self.forward_metadata.decode_wrappers[1]._paged_kv_indices_buf[:int(self.ctx.metadata.sparse_kv_indptr[self._bsr_M].item())],
+                    M=self._bsr_M,
+                    N=self._bsr_N,
+                    R=1,
+                    C=self.block_size,
+                    num_qo_heads=self.group_size,
+                    num_kv_heads=1,
+                    head_dim=self.head_dim,
+                    q_data_type=self.q_data_type,
+                    kv_data_type=self.data_type,
+                    o_data_type=self.q_data_type,
+                )
+                # cache["k"] shape: [total_blocks, block_size, head_dim] -> flatten
+                # to [total_blocks * block_size, num_kv_heads=1, head_dim] for BSR.
+                k_flat = cache["k"].view(-1, 1, self.head_dim)
+                v_flat = cache["v"].view(-1, 1, self.head_dim)
+                o = self.bsr_wrapper.run(q, k_flat, v_flat)
+                # DEBUG: log first call's shapes + output stats
+                if os.environ.get("VORTEX_BSR_DEBUG") == "1" and layer.layer_id == 1:
+                    import sys
+                    print(f"[BSR layer={layer.layer_id}] q.shape={tuple(q.shape)} q.dtype={q.dtype}", file=sys.stderr)
+                    print(f"[BSR layer={layer.layer_id}] k_flat.shape={tuple(k_flat.shape)} k_flat.dtype={k_flat.dtype}", file=sys.stderr)
+                    print(f"[BSR layer={layer.layer_id}] o.shape={tuple(o.shape)} o.dtype={o.dtype}", file=sys.stderr)
+                    print(f"[BSR layer={layer.layer_id}] o stats: mean={o.float().mean().item():.4f} std={o.float().std().item():.4f} "
+                          f"min={o.float().min().item():.4f} max={o.float().max().item():.4f} nans={torch.isnan(o).any().item()}", file=sys.stderr)
+            else:
+                o = self.forward_metadata.decode_wrappers[1].forward(
+                    q,
+                    (cache_k, cache_v),
+                    sm_scale=layer.scaling,
+                    logits_soft_cap=layer.logit_cap,
+                    k_scale=layer.k_scale,
+                    v_scale=layer.v_scale,
+                )
 
         else:
             # Dense attention path
