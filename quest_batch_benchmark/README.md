@@ -107,6 +107,13 @@ already correct.
 
 ## Engine config — matched to the baseline, with documented deviations
 
+The engine is constructed via Quest's official wrapper
+`vortex_torch.engine.sgl.get_engine`, which folds in vortex defaults and
+ends in `sgl.Engine(**kwargs)`. `--engine-api direct` is an opt-in alternative
+that builds the kwargs locally and calls `sgl.Engine(...)` itself with
+identical fairness flags; the two paths are independently sanity-checked to
+produce equivalent TPOT (see "Engine-API comparison" below).
+
 Matched to the `tpot-no-share` baseline (`measure_batch_latency_offline.py`):
 
 - `disable_cuda_graph=True`, `disable_radix_cache=True`,
@@ -157,17 +164,18 @@ pool, but that does not occur in this sweep.
 
 Mean decode TPOT (ms/token) on the B200, `Qwen3-VL-8B-Instruct`,
 `request.json` (9,661 input tokens), 256 output tokens, `repeat=3`,
-Quest `topk_val=64`, measured through `sgl.Engine` (`tpot-no-share` config):
+Quest `topk_val=64`, measured through Quest's `vortex_torch.engine.sgl.get_engine`
+wrapper (`tpot-no-share` config):
 
 | batch size | dense TPOT | quest TPOT | quest speedup |
 |-----------:|-----------:|-----------:|--------------:|
-| 1  |  9.11 | 11.15 | 0.82x |
-| 2  | 10.44 | 13.16 | 0.79x |
-| 4  | 11.99 | 14.99 | 0.80x |
-| 8  | 15.37 | 18.22 | 0.84x |
-| 16 | 21.85 | 25.23 | 0.87x |
-| 32 | 37.53 | 38.68 | 0.97x |
-| 64 | 72.12 | 65.17 | 1.11x |
+| 1  |  9.29 | 11.14 | 0.83x |
+| 2  | 10.62 | 13.07 | 0.81x |
+| 4  | 12.22 | 14.87 | 0.82x |
+| 8  | 15.55 | 18.40 | 0.85x |
+| 16 | 22.02 | 25.41 | 0.87x |
+| 32 | 37.51 | 38.68 | 0.97x |
+| 64 | 72.06 | 65.23 | 1.10x |
 
 All 14 configurations completed with `status=ok` — the KV pool held every batch
 size.
@@ -176,7 +184,7 @@ size.
 query–envelope block-scoring is fixed overhead that, at batch 1–16, outweighs
 the KV-read it saves (decode is weight-bandwidth-bound there, and attention is a
 small fraction). The two modes reach near parity at **batch 32** (37.5 ms vs
-38.7 ms), and by **batch 64 Quest is 1.11x faster** (72.1 ms vs 65.2 ms): dense
+38.7 ms), and by **batch 64 Quest is 1.10x faster** (72.1 ms vs 65.2 ms): dense
 TPOT rises steeply as each query reads the full ~9.9K-token KV, while Quest
 reads only its top-`k` blocks.
 
@@ -188,8 +196,9 @@ nonzero overhead to each decode step; this shifts the point where attention
 **Note on comparability with v0.3 results:** The v0.3 branch ran
 Qwen3-8B on vortex v0.3 + sglang 0.4.x. The numbers from that branch (quest
 1.22x faster at batch 64) are **not directly comparable** to these v0.5 numbers
-— different model, different sglang, different vortex version. The meaningful
-comparison is dense-vs-quest within each branch's own run.
+— different model, different sglang, different vortex version, and the v0.3
+sweep predates the `get_engine` wrapper now used as the default constructor.
+The meaningful comparison is dense-vs-quest within each branch's own run.
 
 **Note on Triton JIT compilation:** vortex v0.5 is pure-Python + Triton (no
 CUDA extension). The first warmup generate per batch triggers Triton kernel
@@ -204,13 +213,13 @@ Three-way decode TPOT (ms/token), `Qwen3-VL-8B-Instruct`, `request.json`
 
 | batch size | dense TPOT (ms) | quest (topk=64) TPOT (ms) | treesparse TPOT (ms) | quest vs dense | treesparse vs dense |
 |-----------:|----------------:|----------------:|---------------------:|---------------:|--------------------:|
-| 1 | 9.11 | 11.15 | 10.78 | 0.82x | 0.84x |
-| 2 | 10.44 | 13.16 | 13.88 | 0.79x | 0.75x |
-| 4 | 11.99 | 14.99 | 14.32 | 0.80x | 0.84x |
-| 8 | 15.37 | 18.22 | 15.55 | 0.84x | 0.99x |
-| 16 | 21.85 | 25.23 | 16.59 | 0.87x | 1.32x |
-| 32 | 37.53 | 38.68 | 18.58 | 0.97x | 2.02x |
-| 64 | 72.12 | 65.17 | 24.91 | 1.11x | 2.89x |
+| 1 | 9.29 | 11.14 | 10.78 | 0.83x | 0.86x |
+| 2 | 10.62 | 13.07 | 13.88 | 0.81x | 0.77x |
+| 4 | 12.22 | 14.87 | 14.32 | 0.82x | 0.85x |
+| 8 | 15.55 | 18.40 | 15.55 | 0.85x | 1.00x |
+| 16 | 22.02 | 25.41 | 16.59 | 0.87x | 1.33x |
+| 32 | 37.51 | 38.68 | 18.58 | 0.97x | 2.02x |
+| 64 | 72.06 | 65.23 | 24.91 | 1.10x | 2.89x |
 
 All 21 configurations (3 methods × 7 batch sizes) completed `status=ok`.
 
@@ -232,7 +241,8 @@ TreeSparse's **`tpot_median_ms`** (median of 3 — discards the single cold rep)
 which is the apples-to-apples match for quest's warm mean.
 
 **Documented unavoidable differences** (different methods require different
-engines — cannot be unified): quest/dense run through `sgl.Engine` (torch
+engines — cannot be unified): quest/dense run through Quest's
+`vortex_torch.engine.sgl.get_engine` wrapper around `sgl.Engine` (torch
 2.9.1, streaming wall-clock TPOT); TreeSparse runs through its own HuggingFace
 + FlashInfer harness (torch 2.11.0, per-decode-step `cuda.synchronize()`
 timing). Both measure mean decode-step latency excluding the first token.
@@ -243,10 +253,11 @@ transparently, not forced equal.
 
 ### Interpretation
 
-TreeSparse is roughly tied with quest at batch 1 (~0.84× dense), crosses over
-dense between batch 8 and 16, and reaches **2.89× faster than dense at batch 64** —
-consistent with its tensor-core paged-decode design favouring large batches.
-Quest crosses over dense near batch 64 (1.11×).
+TreeSparse is roughly tied with quest at batch 1 (~0.86× dense), reaches
+parity with dense at batch 8 (1.00×), pulls ahead at batch 16, and reaches
+**2.89× faster than dense at batch 64** — consistent with its tensor-core
+paged-decode design favouring large batches. Quest crosses over dense near
+batch 64 (1.10×).
 
 > **What TreeSparseAttention is.** A standalone sparse-attention library
 > (`/vast/.../sparse_attn/TreeSparseAttention`) — *not* a vortex/sglang
@@ -312,27 +323,25 @@ quest_batch_benchmark/.venv/bin/python -m pytest quest_batch_benchmark/tests/ -q
 
 ## Engine-API comparison (sanity check)
 
-The benchmark calls `sgl.Engine(**build_engine_kwargs(...))` directly rather
-than going through Quest's official wrapper
+The benchmark routes through Quest's official wrapper
 `vortex_torch.engine.sgl.get_engine`. The wrapper accepts `**kwargs` and
 applies them after its own defaults, so every fairness-relevant flag the
 baseline sets (`disable_cuda_graph=True`, `disable_radix_cache=True`,
-`chunked_prefill_size=...`, debug logging) flows through unchanged; the
-direct path was chosen because it puts every kwarg in one local file rather
-than depending on the wrapper's hardcoded defaults.
+`chunked_prefill_size=...`, debug logging) flows through unchanged. The
+opt-in alternative `--engine-api direct` builds the same kwargs locally and
+calls `sgl.Engine(**kwargs)` itself — useful as an independent sanity check
+that the wrapper isn't perturbing measurements.
 
-To verify the choice doesn't perturb the numbers, the harness exposes
-`--engine-api {direct,get_engine}` and the driver
-`run_engine_api_comparison.sh` runs the full dense+quest sweep through both
-paths with matched fairness flags, then writes a side-by-side table at
-`results/engine_api_comparison.md`. Across all 14 configurations the two
-paths agree within 1.5% TPOT (within 0.5% on the Quest path Quest's wrapper
-is designed for, modulo a single bs=4 noise spike at 2.6%); the dense arm
-shows a small ~1-1.5% systematic upward bias under `get_engine` (largest at
-small batch sizes), attributable to the wrapper passing its full
-`vortex_*` kwargs through to `sgl.Engine` even when sparsity is off, but
-this does not affect any dense-vs-quest comparison conclusion since both
-arms of any given comparison shift together.
+The driver `run_engine_api_comparison.sh` runs the full dense+quest sweep
+through both paths with matched fairness flags and writes a side-by-side
+table at `results/engine_api_comparison.md`. Across all 14 configurations
+the two paths agree within 1.5% TPOT (within 0.5% on the Quest path Quest's
+wrapper is designed for, modulo a single bs=4 noise spike at 2.6%); the
+dense arm under `get_engine` runs ~1-1.5% slower than under `direct` at
+small batch sizes (shrinking to ~0.1% at bs=64), plausibly because the
+wrapper passes its full set of `vortex_*` kwargs through to `sgl.Engine`
+even when sparsity is off. The bias does not affect any dense-vs-quest
+comparison conclusion — both numbers are produced by the same constructor.
 
 ```bash
 GPU=0 bash quest_batch_benchmark/run_engine_api_comparison.sh

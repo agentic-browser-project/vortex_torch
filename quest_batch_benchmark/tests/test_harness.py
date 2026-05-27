@@ -14,7 +14,7 @@ def _args(attention, **over):
     d = dict(attention=attention, model_path="/models/Qwen3-8B", max_tokens=256,
              repeat=3, topk_val=64, enable_cuda_graph=False,
              mem_fraction_static=None, max_seq_lens=16384,
-             vortex_cache_dir="/tmp/vcache", engine_api="direct")
+             vortex_cache_dir="/tmp/vcache", engine_api="get_engine")
     d.update(over)
     return SimpleNamespace(**d)
 

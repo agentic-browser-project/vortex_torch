@@ -11,11 +11,15 @@ as `run_batch_experiments_offline.sh tpot-no-share`):
   * `engine.generate(..., stream=True)` and time the stream,
   * TPOT = (end - first_token_time) / (tokens_generated - 1).
 
-The engine config mirrors the `tpot-no-share` baseline: CUDA graph disabled,
-radix cache disabled, flashinfer backend, debug logging. One CSV row is written
-per (batch size, repeat). A batch whose KV footprint exceeds the engine's KV
-pool is run by sglang in waves; its rows are flagged status=capped but still
-recorded -- the baseline reports those points too.
+The engine is constructed via Quest's official wrapper
+`vortex_torch.engine.sgl.get_engine` by default; pass `--engine-api direct`
+to build the kwargs locally and call `sgl.Engine(...)` instead (used by the
+engine-API comparison sweep). Both paths set the same baseline-matching
+fairness flags: CUDA graph disabled, radix cache disabled, flashinfer
+backend, debug logging. One CSV row is written per (batch size, repeat). A
+batch whose KV footprint exceeds the engine's KV pool is run by sglang in
+waves; its rows are flagged status=capped but still recorded -- the
+baseline reports those points too.
 """
 from __future__ import annotations
 
@@ -442,12 +446,14 @@ def build_parser() -> argparse.ArgumentParser:
         description="Quest decode-speed (TPOT) batch benchmark")
     p.add_argument("--attention", choices=["quest", "dense"], required=True)
     p.add_argument("--engine-api", choices=["direct", "get_engine"],
-                   default="direct",
-                   help="Engine constructor path. 'direct' (current default) "
-                        "calls sgl.Engine(**build_engine_kwargs); 'get_engine' "
-                        "routes through vortex_torch.engine.sgl.get_engine "
-                        "with identical fairness flags. Used by the "
-                        "engine-API comparison sweep.")
+                   default="get_engine",
+                   help="Engine constructor path. 'get_engine' (default) "
+                        "routes through Quest's official wrapper "
+                        "vortex_torch.engine.sgl.get_engine; 'direct' is an "
+                        "opt-in alternative that calls "
+                        "sgl.Engine(**build_engine_kwargs) directly with "
+                        "identical fairness flags. Used by the engine-API "
+                        "comparison sweep (run_engine_api_comparison.sh).")
     p.add_argument("--model-path",
                    default="/vast/projects/liuv/pennnetworks/hf_models/Qwen/Qwen3-VL-8B-Instruct",
                    help="Headline model is Qwen3-VL-8B-Instruct (the sgl "
