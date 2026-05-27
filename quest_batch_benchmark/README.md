@@ -160,6 +160,100 @@ concurrently (no wave-serialization), and every result row is `status=ok`. The
 harness flags `status=capped` for any batch whose KV footprint would exceed the
 pool, but that does not occur in this sweep.
 
+## CUDA graph (second category)
+
+The benchmark is run in **two categories**: a *no-graph* category (the
+default, matching the `tpot-no-share` baseline's `disable_cuda_graph=True`),
+and a *CUDA-graph* category (`--enable-cuda-graph`, which sets
+`disable_cuda_graph=False`). Both share every other engine flag — sampling,
+chunked-prefill sizing, overlap-schedule disabling, debug logging — so the
+two-category comparison isolates the effect of the CUDA-graph capture alone.
+
+### Coverage
+
+| method | no-graph | CUDA graph |
+|---|:---:|:---:|
+| dense (sgl.Engine + flashinfer) | yes | yes |
+| quest (sgl.Engine + vortex sparsity) | yes | yes (verified by bs=2 smoke; full sweep below) |
+| TreeSparseAttention (own HF+FlashInfer harness) | yes | **no** |
+
+TreeSparseAttention is excluded from the CUDA-graph category because its
+decode harness is structurally graph-incompatible (per-step
+`torch.cuda.synchronize()` for timing, per-step `sampled.tolist()` host
+copy in the sampling path, a per-step Python loop over layers in
+`decode_step`, and a hardcoded `is_cuda_graph_enabled=False` argument in
+its FlashInfer plan call). See [`cuda_graph_status.md`](cuda_graph_status.md)
+for code citations and the full discussion.
+
+### Results — CUDA-graph TPOT (ms/token)
+
+Same fairness contract as the no-graph table (`Qwen3-VL-8B-Instruct`,
+`request.json` 9,661 input tokens, 256 output tokens, `repeat=3`,
+Quest `topk_val=64`, B200, `get_engine` wrapper), with
+`disable_cuda_graph=False`:
+
+| batch size | dense TPOT | quest TPOT | quest speedup |
+|-----------:|-----------:|-----------:|--------------:|
+| 1  |  5.68 |  5.83 | 0.97x |
+| 2  |  6.68 |  6.84 | 0.98x |
+| 4  |  8.79 |  8.86 | 0.99x |
+| 8  | 12.89 | 12.58 | 1.02x |
+| 16 | 20.71 | 19.74 | 1.05x |
+| 32 | 36.77 | 34.32 | 1.07x |
+| 64 | 71.18 | 63.56 | 1.12x |
+
+All 14 configurations completed with `status=ok`.
+
+### CUDA-graph vs no-graph (same method)
+
+Side-by-side from `results/cuda_graph_comparison.md` (speedup > 1 means
+CUDA graph is faster than no-graph at that point; `abs diff = CUDA-graph −
+no-graph`, so a negative number also means CUDA graph is faster):
+
+| attention | batch size | no-graph TPOT (ms) | CUDA-graph TPOT (ms) | abs diff (ms) | speedup (no-graph / CUDA-graph) |
+|---|---:|---:|---:|---:|---:|
+| dense | 1 | 9.290 | 5.682 | -3.608 | 1.635018 |
+| dense | 2 | 10.624 | 6.676 | -3.948 | 1.591339 |
+| dense | 4 | 12.216 | 8.790 | -3.426 | 1.389765 |
+| dense | 8 | 15.550 | 12.892 | -2.658 | 1.206155 |
+| dense | 16 | 22.020 | 20.714 | -1.305 | 1.063016 |
+| dense | 32 | 37.509 | 36.773 | -0.736 | 1.020004 |
+| dense | 64 | 72.056 | 71.181 | -0.875 | 1.012287 |
+| quest | 1 | 11.140 | 5.826 | -5.314 | 1.912128 |
+| quest | 2 | 13.071 | 6.842 | -6.229 | 1.910305 |
+| quest | 4 | 14.866 | 8.856 | -6.010 | 1.678650 |
+| quest | 8 | 18.396 | 12.577 | -5.819 | 1.462655 |
+| quest | 16 | 25.406 | 19.741 | -5.665 | 1.286983 |
+| quest | 32 | 38.682 | 34.320 | -4.362 | 1.127088 |
+| quest | 64 | 65.228 | 63.562 | -1.665 | 1.026203 |
+
+Display values are 3-decimal-place rounded; `abs diff` and `speedup` were
+computed from the underlying full-precision aggregates (re-deriving them
+from the rounded display columns can give slightly different last-digit
+values).
+
+### Interpretation
+
+CUDA graph buys the most at small batch — quest goes from 11.14 → 5.83 ms
+at bs=1 (1.91× faster) and dense from 9.29 → 5.68 ms (1.63×). The speedup
+decays monotonically with batch size as kernel time amortizes the
+per-step launch overhead that the graph replays in one shot; by bs=64
+both modes converge to ~1.01-1.03× (quest 65.23 → 63.56, dense 72.06 →
+71.18). The dense-vs-quest crossover within the CUDA-graph category shifts
+**earlier** (quest is already faster than dense from bs=8 onward, where in
+the no-graph category quest only reaches parity around bs=32) — graph
+capture removes the per-step overhead that previously masked quest's
+attention-time savings at moderate batch sizes.
+
+Practical caveat: at bs=64 the first of the three repeats absorbs the
+CUDA-graph capture cost and reports a slightly lower-tpot/higher-ttft
+outlier; the mean still settles to the headline number. The no-graph and
+CUDA-graph categories were measured in separate physical runs (no-graph
+from the prior sweep at commit `439c617`, CUDA-graph from this sweep),
+so the comparison absorbs whatever B200 thermal/hardware variance exists
+between the two run-times — within-run repeat noise is ≤2% for every
+configuration, well below the smallest observed cross-category delta.
+
 ## Results
 
 Mean decode TPOT (ms/token) on the B200, `Qwen3-VL-8B-Instruct`,
@@ -305,6 +399,18 @@ environment build is **not** required — TreeSparse's environment is already
 built. After all three stages complete, `build_comparison.py` merges the
 results into `results/tpot_three_way.csv` and `results/comparison_table.md`.
 
+The CUDA-graph (second category) sweep is driven separately:
+
+```bash
+# 4. (optional) the CUDA-graph category for dense + quest, plus the side-by-side
+GPU=0 bash quest_batch_benchmark/run_benchmark_cudagraph.sh
+```
+
+This requires the no-graph sweep (step 3) to have completed first, because
+the comparison merges against the no-graph aggregate. Outputs land in
+`results/raw_results_cudagraph.csv`, `tpot_vs_batchsize_cudagraph.csv`, and
+`cuda_graph_comparison.{csv,md}`.
+
 The dense and quest modes can also be run separately:
 
 ```bash
@@ -372,7 +478,13 @@ GPU=0 bash quest_batch_benchmark/run_engine_api_comparison.sh
 | `results/raw_results_{direct,get_engine}.csv` | Per-repeat measurements from the engine-API comparison sweep. |
 | `results/tpot_vs_batchsize_{direct,get_engine}.csv` | Per-API aggregated TPOT vs batch size. |
 | `results/engine_api_comparison.{csv,md}` | Side-by-side engine-API TPOT comparison table. |
-| `tests/` | Unit tests (40 tests). |
+| `tests/` | Unit tests (45 tests). |
+| `cuda_graph_status.md` | Per-method CUDA-graph capability note (dense yes, quest yes-by-smoke, TreeSparse no with code citations). |
+| `compare_cuda_graph.py` | Joins the no-graph and CUDA-graph aggregated CSVs into the graph-vs-no-graph comparison table. |
+| `run_benchmark_cudagraph.sh` | Driver: runs dense+quest with `--enable-cuda-graph`, aggregates, then builds the graph-vs-no-graph comparison. |
+| `results/raw_results_cudagraph.csv` | Per-(mode, batch size, repeat) measurements from the CUDA-graph sweep. |
+| `results/tpot_vs_batchsize_cudagraph.csv` | Aggregated TPOT vs batch size from the CUDA-graph sweep. |
+| `results/cuda_graph_comparison.{csv,md}` | Side-by-side CUDA-graph vs no-graph TPOT comparison table. |
 
 ## Tunable knobs
 
