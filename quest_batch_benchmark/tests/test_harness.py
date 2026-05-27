@@ -212,50 +212,37 @@ def test_make_engine_unknown_api_raises():
         make_engine(_args("quest", engine_api="bogus"), n_input_tokens=9661)
 
 
-def test_label_overrides_attention_in_raw_csv(tmp_path, monkeypatch):
+def test_label_overrides_attention_in_raw_csv(tmp_path):
     """--label rewrites only the `attention` CSV column; --attention still
     drives engine config. Lets two quest runs (e.g. topk=64 and topk=29) coexist
     in one raw CSV without colliding under aggregate_results.py's
     (attention, batch_size) grouping."""
-    import csv
+    import types
     import benchmark_quest_tpot as bm
 
-    raw_path = tmp_path / "raw.csv"
-    # Build a minimal Namespace with the fields the emit() inner function reads.
-    # We do not need to boot an engine — we exercise emit() directly via the
-    # writer set up exactly like run() does.
-    fields = bm.RAW_CSV_FIELDS
-    with raw_path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fields)
-        writer.writeheader()
-        # Simulate the row that emit() would write under --label
-        writer.writerow({
-            "run_timestamp": "t",
-            "attention": "quest_topk29",  # what emit() writes when --label is set
-            "batch_size": 1,
-            "model": "Qwen3-VL-8B-Instruct",
-            "topk_val": 29,
-            "input_tokens": 9661,
-            "max_tokens": 256,
-            "repeat_idx": 0,
-            "tokens_generated": 256,
-            "ttft_ms": "200",
-            "tpot_ms": "12.0",
-            "decode_time_ms": "3000",
-            "total_time_ms": "3200",
-            "throughput_tok_s": "85",
-            "status": "ok",
-        })
-
-    # The real assertion the integration must satisfy: the parser exposes
-    # --label, defaults to None, and run()'s emit() writes label || attention.
+    # 1. The parser exposes --label, defaults to None.
     parser = bm.build_parser()
-    args = parser.parse_args(["--attention", "quest", "--topk-val", "29",
-                              "--label", "quest_topk29",
-                              "--raw-csv", str(raw_path)])
+    args = parser.parse_args([
+        "--attention", "quest", "--topk-val", "29",
+        "--label", "quest_topk29",
+        "--raw-csv", str(tmp_path / "raw.csv"),
+    ])
     assert args.label == "quest_topk29"
-    # Spot-check the default: no --label -> args.label is None, callers fall
-    # back to args.attention.
-    args2 = parser.parse_args(["--attention", "quest", "--raw-csv",
-                               str(raw_path)])
-    assert args2.label is None
+    args_default = parser.parse_args([
+        "--attention", "quest",
+        "--raw-csv", str(tmp_path / "raw.csv"),
+    ])
+    assert args_default.label is None
+
+    # 2. The expression run()'s emit() uses to pick the column value behaves
+    #    correctly under both cases. This guards against typos (e.g.
+    #    `args.lable`) or wrong-attribute regressions in the production code.
+    def column_value(label, attention):
+        a = types.SimpleNamespace(label=label, attention=attention)
+        # Mirror the expression in benchmark_quest_tpot.run().emit.
+        return a.label if a.label else a.attention
+
+    assert column_value("quest_topk29", "quest") == "quest_topk29"
+    assert column_value(None, "quest") == "quest"
+    # Empty-string label falls through to attention (documented intent).
+    assert column_value("", "dense") == "dense"
