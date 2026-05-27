@@ -14,7 +14,7 @@ def _args(attention, **over):
     d = dict(attention=attention, model_path="/models/Qwen3-8B", max_tokens=256,
              repeat=3, topk_val=64, enable_cuda_graph=False,
              mem_fraction_static=None, max_seq_lens=16384,
-             vortex_cache_dir="/tmp/vcache")
+             vortex_cache_dir="/tmp/vcache", engine_api="direct")
     d.update(over)
     return SimpleNamespace(**d)
 
@@ -130,3 +130,83 @@ def test_warmup_batch_runs_one_short_untimed_generate():
     assert got_prompts == prompts                  # the full batch is warmed
     assert kwargs["sampling_params"]["max_new_tokens"] == _WARMUP_TOKENS
     assert not kwargs.get("stream")                # untimed -- not streamed
+
+
+# --- build_get_engine_kwargs (Quest's official get_engine API) -------------
+
+from benchmark_quest_tpot import build_get_engine_kwargs, QUEST_MODULE
+
+
+def test_get_engine_kwargs_dense_overrides_sparsity():
+    """get_engine hardcodes enable_vortex_sparsity=True; dense must override."""
+    k = build_get_engine_kwargs(_args("dense"), n_input_tokens=9661)
+    assert k["enable_vortex_sparsity"] is False
+    assert k["disable_cuda_graph"] is True       # baseline match
+    assert k["disable_radix_cache"] is True
+    assert k["attention_backend"] == "flashinfer"
+    assert 9661 <= k["chunked_prefill_size"] < 2 * 9661
+    assert k["chunked_prefill_size"] % 16 == 0
+
+
+def test_get_engine_kwargs_quest_sets_vortex():
+    k = build_get_engine_kwargs(_args("quest"), n_input_tokens=9661)
+    assert k["enable_vortex_sparsity"] is True
+    assert k["vortex_module_name"] == QUEST_MODULE
+    assert k["vortex_topk_val"] == 64
+    assert k["vortex_block_size"] == 16
+    assert k["vortex_max_seq_lens"] >= 9661 + 256
+
+
+def test_get_engine_kwargs_fairness_flags_match_direct_path():
+    """Every fairness-relevant flag in build_engine_kwargs must also appear
+    (with the same value) in build_get_engine_kwargs. This is the contract
+    that makes the two paths comparable."""
+    args = _args("quest")
+    direct = build_engine_kwargs(args, n_input_tokens=9661)
+    gengine = build_get_engine_kwargs(args, n_input_tokens=9661)
+    for key in ("disable_cuda_graph", "disable_radix_cache",
+                "disable_overlap_schedule", "attention_backend",
+                "chunked_prefill_size", "page_size", "kv_cache_dtype",
+                "decode_log_interval", "show_time_cost", "log_level"):
+        assert gengine[key] == direct[key], (
+            f"fairness flag {key!r} differs: direct={direct[key]!r} "
+            f"get_engine={gengine[key]!r}"
+        )
+
+
+def test_get_engine_kwargs_enable_cuda_graph_flag():
+    k = build_get_engine_kwargs(_args("quest", enable_cuda_graph=True), 9661)
+    assert k["disable_cuda_graph"] is False
+
+
+# --- make_engine dispatcher ------------------------------------------------
+
+from unittest.mock import patch
+from benchmark_quest_tpot import make_engine
+
+
+def test_make_engine_direct_calls_sgl_engine():
+    with patch("benchmark_quest_tpot.sgl.Engine") as mock_eng:
+        make_engine(_args("quest", engine_api="direct"), n_input_tokens=9661)
+    assert mock_eng.called
+    # Direct path uses our build_engine_kwargs -- no vortex_module_path key.
+    call_kwargs = mock_eng.call_args.kwargs
+    assert call_kwargs["enable_vortex_sparsity"] is True
+    assert "vortex_module_path" not in call_kwargs
+
+
+def test_make_engine_get_engine_routes_through_helper():
+    with patch("vortex_torch.engine.sgl.api.sgl.Engine") as mock_eng:
+        make_engine(_args("quest", engine_api="get_engine"), n_input_tokens=9661)
+    assert mock_eng.called
+    # get_engine path always passes vortex_module_path.
+    call_kwargs = mock_eng.call_args.kwargs
+    assert "vortex_module_path" in call_kwargs
+    assert call_kwargs["disable_cuda_graph"] is True  # baseline-matched
+    assert call_kwargs["disable_radix_cache"] is True
+
+
+def test_make_engine_unknown_api_raises():
+    import pytest
+    with pytest.raises(ValueError, match="unknown engine_api"):
+        make_engine(_args("quest", engine_api="bogus"), n_input_tokens=9661)

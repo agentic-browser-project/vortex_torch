@@ -143,6 +143,71 @@ def build_engine_kwargs(args, n_input_tokens: int) -> dict:
     return kwargs
 
 
+def build_get_engine_kwargs(args, n_input_tokens: int) -> dict:
+    """Kwargs for `vortex_torch.engine.sgl.get_engine` -- Quest's official
+    in-process engine constructor.
+
+    `get_engine` hardcodes a few defaults that the baseline `tpot-no-share`
+    config flips (notably `disable_cuda_graph=False`, `enable_vortex_sparsity=
+    True`). It also accepts `**kwargs` and applies them *after* its own
+    defaults, so we override every fairness-relevant flag explicitly here.
+    The only meaningful difference between the engine produced by this path
+    and the engine produced by `sgl.Engine(**build_engine_kwargs(...))` is
+    the constructor call itself -- same model, same backend, same sparsity
+    flow, same CUDA-graph / radix-cache / chunked-prefill / overlap-schedule
+    posture, same debug logging.
+    """
+    max_seq = max(args.max_seq_lens, n_input_tokens + args.max_tokens + 64)
+    chunked_prefill_size = ((n_input_tokens + 15) // 16) * 16 + 16
+
+    kwargs = dict(
+        # get_engine's named params we want to pin
+        model_path=args.model_path,
+        vortex_max_seq_lens=max_seq,
+        vortex_block_size=16,
+        vortex_topk_val=args.topk_val,
+        vortex_block_reserved_bos=1,
+        vortex_block_reserved_eos=2,
+        vortex_workload_chunk_size=32,
+        vortex_layers_skip=[0],
+        vortex_module_name=QUEST_MODULE,
+        # gqa_quest_sparse_attention is built-in to vortex_torch v0.5, so the
+        # flow is already in the registry by the time get_engine runs;
+        # vortex_module_path is only consulted if the name is unregistered.
+        # Pointing at this benchmark file (which never @register's anything)
+        # is harmless and avoids hardcoding submissions/-relative paths.
+        vortex_module_path=str(Path(__file__).resolve()),
+        kv_cache_dtype="auto",
+        # Fairness overrides -- passed via **kwargs tail in get_engine; they
+        # land in the final sgl.Engine kwargs dict via engine_kwargs.update.
+        disable_cuda_graph=not args.enable_cuda_graph,
+        disable_radix_cache=True,
+        disable_overlap_schedule=True,
+        attention_backend="flashinfer",
+        page_size=16,
+        chunked_prefill_size=chunked_prefill_size,
+        decode_log_interval=1,
+        show_time_cost=True,
+        log_level="debug",
+        trust_remote_code=True,
+        vortex_attention_backend="flashinfer",
+        vortex_compilation_cache_dir=args.vortex_cache_dir,
+        # Explicit: get_engine's hardcoded default is True, but we restate it
+        # so the override-every-fairness-flag contract is visible in one place.
+        enable_vortex_sparsity=True,
+    )
+    if args.mem_fraction_static is not None:
+        kwargs["mem_fraction_static"] = args.mem_fraction_static
+
+    if args.attention == "dense":
+        # get_engine hardcodes enable_vortex_sparsity=True; flip it off for
+        # the dense baseline. The vortex_* kwargs remain in the call but are
+        # not consulted by sglang when sparsity is off (verified by the
+        # smoke test in Task 5).
+        kwargs["enable_vortex_sparsity"] = False
+    return kwargs
+
+
 def compute_metrics(start_time: float, first_token_time: Optional[float],
                     end_time: float, tokens_generated: int) -> dict:
     """Turn streaming timestamps into TTFT / decode-time / TPOT (all ms).
@@ -268,6 +333,24 @@ def measure_batch_latency(engine, prompts: List[str], max_tokens: int) -> dict:
     return metrics
 
 
+def make_engine(args, n_input_tokens: int):
+    """Construct an sgl.Engine via the chosen engine API.
+
+    `direct`     -- current path: build kwargs in this file, call sgl.Engine.
+    `get_engine` -- Quest's official wrapper at vortex_torch.engine.sgl.api;
+                    it folds in vortex defaults and ends in sgl.Engine(**...).
+    The two paths are configured to produce equivalent fairness-relevant
+    kwargs (see build_get_engine_kwargs); any TPOT delta between them is
+    attributable to the constructor call itself.
+    """
+    if args.engine_api == "direct":
+        return sgl.Engine(**build_engine_kwargs(args, n_input_tokens))
+    if args.engine_api == "get_engine":
+        from vortex_torch.engine.sgl.api import get_engine
+        return get_engine(**build_get_engine_kwargs(args, n_input_tokens))
+    raise ValueError(f"unknown engine_api: {args.engine_api!r}")
+
+
 def run(args) -> None:
     raw_path = Path(args.raw_csv)
     raw_path.parent.mkdir(parents=True, exist_ok=True)
@@ -280,7 +363,7 @@ def run(args) -> None:
     seq_len = n_input + args.max_tokens
     print(f"[setup] attention={args.attention}  input_tokens={n_input}", flush=True)
 
-    engine = sgl.Engine(**build_engine_kwargs(args, n_input))
+    engine = make_engine(args, n_input)
     try:
         pool_tokens = kv_pool_capacity(engine)
         print(f"[setup] kv pool tokens={pool_tokens}  per-request seq_len={seq_len}",
@@ -358,6 +441,13 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="Quest decode-speed (TPOT) batch benchmark")
     p.add_argument("--attention", choices=["quest", "dense"], required=True)
+    p.add_argument("--engine-api", choices=["direct", "get_engine"],
+                   default="direct",
+                   help="Engine constructor path. 'direct' (current default) "
+                        "calls sgl.Engine(**build_engine_kwargs); 'get_engine' "
+                        "routes through vortex_torch.engine.sgl.get_engine "
+                        "with identical fairness flags. Used by the "
+                        "engine-API comparison sweep.")
     p.add_argument("--model-path",
                    default="/vast/projects/liuv/pennnetworks/hf_models/Qwen/Qwen3-VL-8B-Instruct",
                    help="Headline model is Qwen3-VL-8B-Instruct (the sgl "
