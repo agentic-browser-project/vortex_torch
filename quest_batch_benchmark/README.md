@@ -240,21 +240,25 @@ decays monotonically with batch size as kernel time amortizes the
 per-step launch overhead that the graph replays in one shot; by bs=64
 both modes converge to ~1.01-1.03× (quest 65.23 → 63.56, dense 72.06 →
 71.18). The dense-vs-quest crossover within the CUDA-graph category shifts
-**earlier** (quest is already faster than dense from bs=8 onward, where in
-the no-graph category quest only reaches parity around bs=32) — graph
-capture removes the per-step overhead that previously masked quest's
-attention-time savings at moderate batch sizes.
+**earlier** (quest reaches parity with dense from bs=8 onward at 12.58 vs
+12.89 ms, where in the no-graph category quest only reaches parity around
+bs=32) — graph capture removes the per-step launch overhead that
+previously masked quest's attention-time savings at moderate batch sizes.
 
-Practical caveat: at bs=64 the first of the three repeats absorbs the
-CUDA-graph capture cost and reports a slightly lower-tpot/higher-ttft
-outlier; the mean still settles to the headline number. The no-graph and
-CUDA-graph categories were measured in separate physical runs (no-graph
-from the prior sweep at commit `439c617`, CUDA-graph from this sweep),
-so the comparison absorbs whatever B200 thermal/hardware variance exists
-between the two run-times — within-run repeat noise is ≤2% for every
-configuration, well below the smallest observed cross-category delta.
+Practical caveat: CUDA-graph capture is a one-time cost that lands in the
+first repeat's TTFT (rep0 carries ~200 ms extra TTFT at bs=64 vs rep1/rep2),
+not in TPOT, since TPOT excludes the first token by construction. The
+bs=64 TPOT means are robust. The no-graph and CUDA-graph categories were
+measured in separate physical runs (no-graph from the prior sweep at
+commit `439c617`, CUDA-graph from this sweep), so the comparison absorbs
+whatever B200 thermal/hardware variance exists between the two run-times
+— within-run repeat noise is ≤2% for every configuration, well below the
+smallest observed cross-category delta.
 
 ## Results
+
+The remainder of this README covers the no-graph (baseline-matched)
+sweep, the three-way comparison, and reproduction.
 
 Mean decode TPOT (ms/token) on the B200, `Qwen3-VL-8B-Instruct`,
 `request.json` (9,661 input tokens), 256 output tokens, `repeat=3`,
