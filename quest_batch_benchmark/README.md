@@ -253,15 +253,7 @@ both modes converge to ~1.01-1.03× (quest 65.08 → 64.03, dense 71.88 →
 bs=32) — graph capture removes the per-step launch overhead that
 previously masked quest's attention-time savings at moderate batch sizes.
 
-Quest at `topk_val=29` outperforms `topk_val=64` by a small but consistent margin
-under CUDA graph: at bs=64 quest@29 is 62.91 ms vs quest@64's 64.03 ms (~1.7%
-faster). The gap rises broadly with batch size — from ~0.05 ms at bs=1 to ~1.1 ms
-at bs=64 — though not monotonically (it dips slightly at bs=8). This is the mirror
-image of the no-graph observation that the two variants are indistinguishable —
-graph capture amortises the per-step block-scoring overhead that previously masked
-the tighter budget's KV-read savings. Both Quest variants reach parity with dense at bs=8 (quest@29 12.54 vs
-dense 12.85; quest@64 12.63 vs dense 12.85) and quest@29 reaches **1.13× faster
-than dense at bs=64**, edging quest@64's 1.11×.
+Quest at `topk_val=29` edges `topk_val=64` by a small, batch-growing margin under CUDA graph (~0.05 ms at bs=1 to ~1.1 ms at bs=64; ~1.7% faster at bs=64) — graph capture amortises the per-step indexer cost that masked the tighter budget's KV-read savings under no-graph. Both Quest variants cross dense from bs=8 onward, and quest@29 reaches **1.13× faster than dense at bs=64** (vs quest@64's 1.11×).
 
 Practical caveat: CUDA-graph capture is a one-time cost that lands in the
 first repeat's TTFT (rep0 carries ~200 ms extra TTFT at bs=64 vs rep1/rep2),
@@ -315,15 +307,7 @@ consistent with Qwen3-VL-8B's multimodal scaffolding adding a small but
 nonzero overhead to each decode step; this shifts the point where attention
 (which Quest reduces) becomes the dominant cost.
 
-**Quest at `topk_val=29` is essentially indistinguishable from `topk_val=64` in
-the no-graph category** — TPOT differs by less than 0.5% at every batch size
-(e.g. 65.01 ms vs 65.08 ms at bs=64). The tighter KV budget (~464 tokens kept
-instead of 1024) should mean less KV-read work, but in this regime the per-step
-block-scoring / indexer cost dominates the read cost, so the budget choice
-barely moves TPOT. Both Quest variants reach parity with dense around bs=32 and
-cross over (~1.10–1.11× faster) at bs=64. Under CUDA graph (next category), the
-indexer overhead is amortised by graph capture and the tighter budget *does*
-start to surface as a small win — see below.
+**`topk_val=29` and `topk_val=64` are indistinguishable in the no-graph category** (within 0.5% at every batch size, e.g. 65.01 vs 65.08 ms at bs=64; both 1.10–1.11× faster than dense at bs=64): the per-step indexer cost dominates the KV-read here, so the tighter budget barely moves TPOT — the effect surfaces under CUDA graph (next category).
 
 **Note on comparability with v0.3 results:** The v0.3 branch ran
 Qwen3-8B on vortex v0.3 + sglang 0.4.x. The numbers from that branch (quest
@@ -393,12 +377,7 @@ parity with dense at batch 8 (1.00×), pulls ahead at batch 16, and reaches
 paged-decode design favouring large batches. Quest crosses over dense near
 batch 64 (1.10×).
 
-Quest at `topk_val=29` tracks `topk_val=64` closely in the no-graph category
-(11.27 vs 11.23 ms at bs=1; 65.01 vs 65.08 ms at bs=64) — the tighter KV budget
-yields only ~0.1 ms of savings against quest@64 at bs=64. The two variants reach
-parity with dense around bs=32 together. The benefit of `topk_val=29` is more
-visible under CUDA graph (see the CUDA-graph table above), where the per-step
-indexer cost is amortised.
+Quest at `topk_val=29` tracks `topk_val=64` closely here (11.27 vs 11.23 at bs=1; 65.01 vs 65.08 at bs=64) and crosses dense alongside it — the win surfaces under CUDA graph (see above).
 
 > **What TreeSparseAttention is.** A standalone sparse-attention library
 > (`/vast/.../sparse_attn/TreeSparseAttention`) — *not* a vortex/sglang
