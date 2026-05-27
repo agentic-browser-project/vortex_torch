@@ -358,7 +358,12 @@ GPU=0 bash quest_batch_benchmark/run_engine_api_comparison.sh
 | `results/treesparse_raw.json` | Raw per-repeat output from TreeSparse's `benchmark_batch.py`. |
 | `results/tpot_three_way.csv` | Merged three-way TPOT table (dense, quest, treesparse). |
 | `results/comparison_table.md` | Rendered markdown of the three-way comparison table. |
-| `tests/` | Unit tests (28 tests). |
+| `compare_engine_apis.py` | Joins two per-API aggregated CSVs into the engine-API comparison table. |
+| `run_engine_api_comparison.sh` | Driver: runs the dense+quest sweep via both `--engine-api` paths, aggregates each, then builds the comparison. |
+| `results/raw_results_{direct,get_engine}.csv` | Per-repeat measurements from the engine-API comparison sweep. |
+| `results/tpot_vs_batchsize_{direct,get_engine}.csv` | Per-API aggregated TPOT vs batch size. |
+| `results/engine_api_comparison.{csv,md}` | Side-by-side engine-API TPOT comparison table. |
+| `tests/` | Unit tests (40 tests). |
 
 ## Tunable knobs
 
