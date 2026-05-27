@@ -186,198 +186,81 @@ copy in the sampling path, a per-step Python loop over layers in
 its FlashInfer plan call). See [`cuda_graph_status.md`](cuda_graph_status.md)
 for code citations and the full discussion.
 
-### Results — CUDA-graph TPOT (ms/token)
+## Results — CUDA graph off (no-graph baseline, 4 methods)
 
-Same fairness contract as the no-graph table (`Qwen3-VL-8B-Instruct`,
-`request.json` 9,661 input tokens, 256 output tokens, `repeat=3`,
-Quest `topk_val=64`, B200, `get_engine` wrapper), with
-`disable_cuda_graph=False`:
+The headline category, matching the `tpot-no-share` sgl baseline
+(`disable_cuda_graph=True`). All four methods run on the same
+`Qwen3-VL-8B-Instruct` model, the same `request.json` (9,661-token
+text prompt), 256 output tokens, `repeat=3`, on the same B200. Numbers
+are the mean of three warm repeats per configuration. The `quest (topk=64)`
+column is the headline Quest configuration (1024 tokens kept per
+query, the value used in the original v0.5 benchmark); `quest (topk=29)`
+is Quest at the **vortex_torch `get_engine` default** (`vortex_topk_val=29`,
+~464 tokens kept) — what an out-of-the-box user sees if they call the
+wrapper without overriding the topk.
 
-| batch size | dense TPOT | quest (topk=64) TPOT | quest (topk=64) speedup | quest (topk=29) TPOT | quest (topk=29) speedup |
-|-----------:|-----------:|---------------------:|------------------------:|---------------------:|------------------------:|
-|  1 |  5.60 |  5.92 | 0.95x |  5.87 | 0.95x |
-|  2 |  6.61 |  6.93 | 0.95x |  6.82 | 0.97x |
-|  4 |  8.71 |  8.96 | 0.97x |  8.85 | 0.98x |
-|  8 | 12.85 | 12.63 | 1.02x | 12.54 | 1.03x |
-| 16 | 20.71 | 19.92 | 1.04x | 19.71 | 1.05x |
-| 32 | 36.71 | 34.50 | 1.06x | 34.28 | 1.07x |
-| 64 | 71.15 | 64.03 | 1.11x | 62.91 | 1.13x |
-
-All 21 configurations completed with `status=ok`.
-
-### CUDA-graph vs no-graph (same method)
-
-Side-by-side from `results/cuda_graph_comparison.md` (speedup > 1 means
-CUDA graph is faster than no-graph at that point; `abs diff = CUDA-graph −
-no-graph`, so a negative number also means CUDA graph is faster):
-
-| attention | batch size | no-graph TPOT (ms) | CUDA-graph TPOT (ms) | abs diff (ms) | speedup (no-graph / CUDA-graph) |
-|---|---:|---:|---:|---:|---:|
-| dense | 1 | 9.140 | 5.596 | -3.544 | 1.633244 |
-| dense | 2 | 10.527 | 6.614 | -3.913 | 1.591615 |
-| dense | 4 | 12.111 | 8.711 | -3.400 | 1.390327 |
-| dense | 8 | 15.537 | 12.850 | -2.687 | 1.209096 |
-| dense | 16 | 21.906 | 20.713 | -1.192 | 1.057556 |
-| dense | 32 | 37.417 | 36.706 | -0.711 | 1.019359 |
-| dense | 64 | 71.884 | 71.152 | -0.731 | 1.010278 |
-| quest | 1 | 11.227 | 5.918 | -5.309 | 1.897063 |
-| quest | 2 | 13.086 | 6.928 | -6.157 | 1.888705 |
-| quest | 4 | 14.875 | 8.964 | -5.912 | 1.659488 |
-| quest | 8 | 18.304 | 12.632 | -5.672 | 1.448999 |
-| quest | 16 | 25.274 | 19.916 | -5.358 | 1.269026 |
-| quest | 32 | 38.622 | 34.503 | -4.119 | 1.119389 |
-| quest | 64 | 65.083 | 64.034 | -1.049 | 1.016378 |
-| quest_topk29 | 1 | 11.267 | 5.867 | -5.400 | 1.920445 |
-| quest_topk29 | 2 | 13.055 | 6.821 | -6.235 | 1.914114 |
-| quest_topk29 | 4 | 14.872 | 8.852 | -6.020 | 1.680163 |
-| quest_topk29 | 8 | 18.313 | 12.536 | -5.777 | 1.460863 |
-| quest_topk29 | 16 | 25.378 | 19.712 | -5.666 | 1.287424 |
-| quest_topk29 | 32 | 38.628 | 34.279 | -4.349 | 1.126883 |
-| quest_topk29 | 64 | 65.007 | 62.905 | -2.102 | 1.033420 |
-
-Display values are 3-decimal-place rounded; `abs diff` and `speedup` were
-computed from the underlying full-precision aggregates (re-deriving them
-from the rounded display columns can give slightly different last-digit
-values).
-
-### Interpretation
-
-CUDA graph buys the most at small batch — quest goes from 11.23 → 5.92 ms
-at bs=1 (1.90× faster) and dense from 9.14 → 5.60 ms (1.63×). The speedup
-decays monotonically with batch size as kernel time amortizes the
-per-step launch overhead that the graph replays in one shot; by bs=64
-both modes converge to ~1.01-1.03× (quest 65.08 → 64.03, dense 71.88 →
-71.15). The dense-vs-quest crossover within the CUDA-graph category shifts
-**earlier** (quest reaches parity with dense from bs=8 onward at 12.63 vs
-12.85 ms, where in the no-graph category quest only reaches parity around
-bs=32) — graph capture removes the per-step launch overhead that
-previously masked quest's attention-time savings at moderate batch sizes.
-
-Quest at `topk_val=29` edges `topk_val=64` by a small, batch-growing margin under CUDA graph (~0.05 ms at bs=1 to ~1.1 ms at bs=64; ~1.7% faster at bs=64) — graph capture amortises the per-step indexer cost that masked the tighter budget's KV-read savings under no-graph. Both Quest variants cross dense from bs=8 onward, and quest@29 reaches **1.13× faster than dense at bs=64** (vs quest@64's 1.11×).
-
-Practical caveat: CUDA-graph capture is a one-time cost that lands in the
-first repeat's TTFT (rep0 carries ~200 ms extra TTFT at bs=64 vs rep1/rep2),
-not in TPOT, since TPOT excludes the first token by construction. The
-bs=64 TPOT means are robust. The no-graph and CUDA-graph categories were
-measured in separate physical runs (no-graph from the prior sweep at
-commit `439c617`, CUDA-graph from this sweep), so the comparison absorbs
-whatever B200 thermal/hardware variance exists between the two run-times
-— within-run repeat noise is ≤2% for every configuration, well below the
-smallest observed cross-category delta.
-
-## Results
-
-The remainder of this README covers the no-graph (baseline-matched)
-sweep, the three-way comparison, and reproduction.
-
-Mean decode TPOT (ms/token) on the B200, `Qwen3-VL-8B-Instruct`,
-`request.json` (9,661 input tokens), 256 output tokens, `repeat=3`,
-Quest `topk_val=64`, measured through Quest's `vortex_torch.engine.sgl.get_engine`
-wrapper (`tpot-no-share` config):
-
-The `quest (topk=64)` column is the headline Quest configuration (1024
-tokens kept per query, the value used in the original v0.5 benchmark);
-`quest (topk=29)` is Quest at the **vortex_torch `get_engine` default**
-(`vortex_topk_val=29`, ~464 tokens kept) — what an out-of-the-box user
-sees if they call the wrapper without overriding the topk.
-
-| batch size | dense TPOT | quest (topk=64) TPOT | quest (topk=64) speedup | quest (topk=29) TPOT | quest (topk=29) speedup |
-|-----------:|-----------:|---------------------:|------------------------:|---------------------:|------------------------:|
-|  1 |  9.14 | 11.23 | 0.81x | 11.27 | 0.81x |
-|  2 | 10.53 | 13.09 | 0.80x | 13.06 | 0.81x |
-|  4 | 12.11 | 14.88 | 0.81x | 14.87 | 0.81x |
-|  8 | 15.54 | 18.30 | 0.85x | 18.31 | 0.85x |
-| 16 | 21.91 | 25.27 | 0.87x | 25.38 | 0.86x |
-| 32 | 37.42 | 38.62 | 0.97x | 38.63 | 0.97x |
-| 64 | 71.88 | 65.08 | 1.10x | 65.01 | 1.11x |
-
-All 21 configurations completed with `status=ok` — the KV pool held every batch
-size.
-
-**Interpretation:** At small batch sizes Quest is *slower* than dense — its
-query–envelope block-scoring is fixed overhead that, at batch 1–16, outweighs
-the KV-read it saves (decode is weight-bandwidth-bound there, and attention is a
-small fraction). The two modes reach near parity at **batch 32** (37.4 ms vs
-38.6 ms), and by **batch 64 Quest is 1.10x faster** (71.9 ms vs 65.1 ms): dense
-TPOT rises steeply as each query reads the full ~9.9K-token KV, while Quest
-reads only its top-`k` blocks.
-
-The crossover at batch 32–64 (rather than batch 16 as in v0.3/Qwen3-8B) is
-consistent with Qwen3-VL-8B's multimodal scaffolding adding a small but
-nonzero overhead to each decode step; this shifts the point where attention
-(which Quest reduces) becomes the dominant cost.
-
-**`topk_val=29` and `topk_val=64` are indistinguishable in the no-graph category** (within 0.5% at every batch size, e.g. 65.01 vs 65.08 ms at bs=64; both 1.10–1.11× faster than dense at bs=64): the per-step indexer cost dominates the KV-read here, so the tighter budget barely moves TPOT — the effect surfaces under CUDA graph (next category).
-
-**Note on comparability with v0.3 results:** The v0.3 branch ran
-Qwen3-8B on vortex v0.3 + sglang 0.4.x. The numbers from that branch (quest
-1.22x faster at batch 64) are **not directly comparable** to these v0.5 numbers
-— different model, different sglang, different vortex version, and the v0.3
-sweep predates the `get_engine` wrapper now used as the default constructor.
-The meaningful comparison is dense-vs-quest within each branch's own run.
-
-**Note on Triton JIT compilation:** vortex v0.5 is pure-Python + Triton (no
-CUDA extension). The first warmup generate per batch triggers Triton kernel
-compilation; a subsequent identical run will be fast because compiled kernels
-are cached. If re-running from a cold start, expect the first batch to be slow
-while kernels compile.
-
-## Three-way comparison — TreeSparseAttention
-
-Three-way decode TPOT (ms/token), `Qwen3-VL-8B-Instruct`, `request.json`
-(9,661 input tokens), 256 output tokens, `repeat=3`, B200:
-
-| batch size | dense TPOT (ms) | quest (topk=64) TPOT (ms) | quest (topk=29) TPOT (ms) | treesparse TPOT (ms) | quest (topk=64) vs dense | quest (topk=29) vs dense | treesparse vs dense |
-|-----------:|----------------:|-------------------------:|-------------------------:|---------------------:|------------------------:|------------------------:|--------------------:|
-| 1 | 9.14 | 11.23 | 11.27 | 10.90 | 0.81x | 0.81x | 0.84x |
-| 2 | 10.53 | 13.09 | 13.06 | 13.98 | 0.80x | 0.81x | 0.75x |
-| 4 | 12.11 | 14.88 | 14.87 | 14.36 | 0.81x | 0.81x | 0.84x |
-| 8 | 15.54 | 18.30 | 18.31 | 15.52 | 0.85x | 0.85x | 1.00x |
-| 16 | 21.91 | 25.27 | 25.38 | 16.64 | 0.87x | 0.86x | 1.32x |
-| 32 | 37.42 | 38.62 | 38.63 | 18.56 | 0.97x | 0.97x | 2.02x |
-| 64 | 71.88 | 65.08 | 65.01 | 24.86 | 1.10x | 1.11x | 2.89x |
+| batch size | dense TPOT (ms) | quest (topk=64) TPOT (ms) | quest (topk=29) TPOT (ms) | TreeSparse TPOT (ms) |
+|-----------:|----------------:|--------------------------:|--------------------------:|---------------------:|
+|  1 |  9.14 | 11.23 | 11.27 | 10.90 |
+|  2 | 10.53 | 13.09 | 13.06 | 13.98 |
+|  4 | 12.11 | 14.88 | 14.87 | 14.36 |
+|  8 | 15.54 | 18.30 | 18.31 | 15.52 |
+| 16 | 21.91 | 25.27 | 25.38 | 16.64 |
+| 32 | 37.42 | 38.62 | 38.63 | 18.56 |
+| 64 | 71.88 | 65.08 | 65.01 | 24.86 |
 
 All 28 configurations (4 methods × 7 batch sizes) completed `status=ok`.
 
+### Interpretation
+
+At small batch sizes Quest is *slower* than dense — its query–envelope
+block-scoring is fixed overhead that, at batch 1–16, outweighs the
+KV-read it saves (decode is weight-bandwidth-bound there, and attention
+is a small fraction). The two modes reach near parity at batch 32 (37.4
+ms vs 38.6 ms), and by **batch 64 Quest is 1.10× faster than dense**
+(71.9 ms vs 65.1 ms): dense TPOT rises steeply as each query reads the
+full ~9.9K-token KV, while Quest reads only its top-`k` blocks.
+
+TreeSparse is roughly tied with quest at batch 1 (~0.86× dense), reaches
+parity with dense at batch 8 (1.00×), pulls ahead at batch 16, and reaches
+**2.89× faster than dense at batch 64** (24.86 ms vs 71.88 ms) —
+consistent with its tensor-core paged-decode design favouring large
+batches.
+
+**`topk_val=29` and `topk_val=64` are indistinguishable in the no-graph category** (within 0.5% at every batch size, e.g. 65.01 vs 65.08 ms at bs=64; both 1.10–1.11× faster than dense at bs=64): the per-step indexer cost dominates the KV-read here, so the tighter budget barely moves TPOT — the effect surfaces under CUDA graph (next section).
+
 ### Fairness contract
 
-**Same input:** all three methods run on `request.json` (the established
+**Same input:** all four methods run on `request.json` (the established
 9,661-token text-only prompt). `run_treesparse.sh` overrides TreeSparse's
-hardcoded WebVoyager request with this file. TreeSparse's tokenizer produced an
-identical 9,661-token prefill, so the input axis matches exactly.
+hardcoded WebVoyager request with this file. TreeSparse's tokenizer
+produced an identical 9,661-token prefill, so the input axis matches
+exactly.
 
 **Same output and sweep:** 256 decode tokens. Batch sizes 1–64, `repeat=3`.
 Identical on both harnesses.
 
-**TPOT — fair representative value:** quest/dense report a *warm* mean-of-3 (an
-untimed warmup runs before each batch). TreeSparse's harness (`benchmark_batch.py`)
-runs **no** separate warmup, so its first repetition absorbs one-time FlashInfer
-JIT / cold-cache cost and inflates its `tpot_mean_ms`. The merge therefore uses
-TreeSparse's **`tpot_median_ms`** (median of 3 — discards the single cold rep),
-which is the apples-to-apples match for quest's warm mean.
+**TPOT — fair representative value:** quest/dense report a *warm* mean-of-3
+(an untimed warmup runs before each batch). TreeSparse's harness
+(`benchmark_batch.py`) runs **no** separate warmup, so its first repetition
+absorbs one-time FlashInfer JIT / cold-cache cost and inflates its
+`tpot_mean_ms`. The merge therefore uses TreeSparse's
+**`tpot_median_ms`** (median of 3 — discards the single cold rep), which
+is the apples-to-apples match for quest's warm mean.
 
-**Documented unavoidable differences** (different methods require different
-engines — cannot be unified): quest/dense run through Quest's
+**Documented unavoidable differences** (different methods require
+different engines — cannot be unified): quest/dense run through Quest's
 `vortex_torch.engine.sgl.get_engine` wrapper around `sgl.Engine` (torch
-2.9.1, streaming wall-clock TPOT); TreeSparse runs through its own HuggingFace
-+ FlashInfer harness (torch 2.11.0, per-decode-step `cuda.synchronize()`
-timing). Both measure mean decode-step latency excluding the first token.
-Sparsity operating points also differ by design: **quest is measured at
-two operating points** — `topk_val=64` (1024 tokens kept, the original
-headline value) and `topk_val=29` (~464 tokens kept, the vortex_torch
-`get_engine` default) — and TreeSparse at `top-k=128` chunks (its own
-`run_batch_experiments.sh tpot-no-share` default). These are each
-method's intended setting — recorded transparently, not forced equal.
-
-### Interpretation
-
-TreeSparse is roughly tied with quest at batch 1 (~0.86× dense), reaches
-parity with dense at batch 8 (1.00×), pulls ahead at batch 16, and reaches
-**2.89× faster than dense at batch 64** — consistent with its tensor-core
-paged-decode design favouring large batches. Quest crosses over dense near
-batch 64 (1.10×).
-
-Quest at `topk_val=29` tracks `topk_val=64` closely here (11.27 vs 11.23 at bs=1; 65.01 vs 65.08 at bs=64) and crosses dense alongside it — the win surfaces under CUDA graph (see above).
+2.9.1, streaming wall-clock TPOT); TreeSparse runs through its own
+HuggingFace + FlashInfer harness (torch 2.11.0, per-decode-step
+`cuda.synchronize()` timing). Both measure mean decode-step latency
+excluding the first token. Sparsity operating points also differ by
+design: **quest is measured at two operating points** — `topk_val=64`
+(1024 tokens kept, the original headline value) and `topk_val=29` (~464
+tokens kept, the vortex_torch `get_engine` default) — and TreeSparse at
+`top-k=128` chunks (its own `run_batch_experiments.sh tpot-no-share`
+default). These are each method's intended setting — recorded
+transparently, not forced equal.
 
 > **What TreeSparseAttention is.** A standalone sparse-attention library
 > (`/vast/.../sparse_attn/TreeSparseAttention`) — *not* a vortex/sglang
@@ -391,8 +274,72 @@ Quest at `topk_val=29` tracks `topk_val=64` closely here (11.27 vs 11.23 at bs=1
 
 > **Why `treesparse` is not a `--attention` mode of `benchmark_quest_tpot.py`.**
 > That harness only drives `sgl.Engine`. TreeSparse does not run under
-> sglang at all — it is a different engine end-to-end. The three-way table
+> sglang at all — it is a different engine end-to-end. The four-way table
 > is produced by merging two independent measurements, not by one harness.
+
+**Note on comparability with v0.3 results:** The v0.3 branch ran Qwen3-8B
+on vortex v0.3 + sglang 0.4.x. The numbers from that branch (quest 1.22×
+faster at batch 64) are **not directly comparable** to these v0.5
+numbers — different model, different sglang, different vortex version,
+and the v0.3 sweep predates the `get_engine` wrapper now used as the
+default constructor. The meaningful comparison is dense-vs-quest within
+each branch's own run.
+
+**Note on Triton JIT compilation:** vortex v0.5 is pure-Python + Triton
+(no CUDA extension). The first warmup generate per batch triggers Triton
+kernel compilation; a subsequent identical run will be fast because
+compiled kernels are cached. If re-running from a cold start, expect the
+first batch to be slow while kernels compile.
+
+## Results — CUDA graph on (3 methods)
+
+Same fairness contract as the no-graph category above (same model, same
+9,661-token input, 256 output tokens, `repeat=3`, same `get_engine`
+wrapper), but with `disable_cuda_graph=False`. TreeSparseAttention is
+**not** included in this category because its decode harness is
+structurally graph-incompatible (per-step `torch.cuda.synchronize()` for
+timing, per-step `sampled.tolist()` host copy in the sampling path, a
+per-step Python loop over layers in `decode_step`, and a hardcoded
+`is_cuda_graph_enabled=False` argument in its FlashInfer plan call). See
+[`cuda_graph_status.md`](cuda_graph_status.md) for code citations.
+
+| batch size | dense TPOT (ms) | quest (topk=64) TPOT (ms) | quest (topk=29) TPOT (ms) |
+|-----------:|----------------:|--------------------------:|--------------------------:|
+|  1 |  5.60 |  5.92 |  5.87 |
+|  2 |  6.61 |  6.93 |  6.82 |
+|  4 |  8.71 |  8.96 |  8.85 |
+|  8 | 12.85 | 12.63 | 12.54 |
+| 16 | 20.71 | 19.92 | 19.71 |
+| 32 | 36.71 | 34.50 | 34.28 |
+| 64 | 71.15 | 64.03 | 62.91 |
+
+All 21 configurations completed with `status=ok`.
+
+### Interpretation
+
+CUDA graph buys the most at small batch — quest goes from 11.23 → 5.92 ms
+at bs=1 (1.90× faster than its no-graph time) and dense from 9.14 → 5.60
+ms (1.63×). The speedup decays monotonically with batch size as kernel
+time amortizes the per-step launch overhead that the graph replays in one
+shot; by bs=64 both modes converge to ~1.01–1.03× (quest 65.08 → 64.03,
+dense 71.88 → 71.15). The dense-vs-quest crossover within the CUDA-graph
+category shifts **earlier** (quest reaches parity with dense from bs=8
+onward at 12.63 vs 12.85 ms, where in the no-graph category quest only
+reaches parity around bs=32) — graph capture removes the per-step launch
+overhead that previously masked quest's attention-time savings at
+moderate batch sizes.
+
+Quest at `topk_val=29` edges `topk_val=64` by a small, batch-growing margin under CUDA graph (~0.05 ms at bs=1 to ~1.1 ms at bs=64; ~1.7% faster at bs=64) — graph capture amortises the per-step indexer cost that masked the tighter budget's KV-read savings under no-graph. Both Quest variants cross dense from bs=8 onward, and quest@29 reaches **1.13× faster than dense at bs=64** (vs quest@64's 1.11×).
+
+Practical caveat: CUDA-graph capture is a one-time cost that lands in the
+first repeat's TTFT (rep0 carries ~200 ms extra TTFT at bs=64 vs
+rep1/rep2), not in TPOT, since TPOT excludes the first token by
+construction. The bs=64 TPOT means are robust. The no-graph and CUDA-graph
+categories were measured in separate physical runs (no-graph first, then
+CUDA-graph), so the comparison absorbs whatever B200 thermal/hardware
+variance exists between the two run-times — within-run repeat noise is
+≤2% for every configuration, well below the smallest observed
+cross-category delta.
 
 ## Reproduce
 
@@ -478,6 +425,42 @@ comparison conclusion — both numbers are produced by the same constructor.
 ```bash
 GPU=0 bash quest_batch_benchmark/run_engine_api_comparison.sh
 ```
+
+## CUDA-graph vs no-graph speedup (same method) — appendix
+
+Side-by-side per-method speedup from CUDA-graph capture, derived from
+`results/cuda_graph_comparison.md` (speedup > 1 means CUDA graph is
+faster than no-graph at that point; `abs diff = CUDA-graph − no-graph`,
+so a negative number also means CUDA graph is faster):
+
+| attention | batch size | no-graph TPOT (ms) | CUDA-graph TPOT (ms) | abs diff (ms) | speedup (no-graph / CUDA-graph) |
+|---|---:|---:|---:|---:|---:|
+| dense | 1 | 9.140 | 5.596 | -3.544 | 1.633244 |
+| dense | 2 | 10.527 | 6.614 | -3.913 | 1.591615 |
+| dense | 4 | 12.111 | 8.711 | -3.400 | 1.390327 |
+| dense | 8 | 15.537 | 12.850 | -2.687 | 1.209096 |
+| dense | 16 | 21.906 | 20.713 | -1.192 | 1.057556 |
+| dense | 32 | 37.417 | 36.706 | -0.711 | 1.019359 |
+| dense | 64 | 71.884 | 71.152 | -0.731 | 1.010278 |
+| quest | 1 | 11.227 | 5.918 | -5.309 | 1.897063 |
+| quest | 2 | 13.086 | 6.928 | -6.157 | 1.888705 |
+| quest | 4 | 14.875 | 8.964 | -5.912 | 1.659488 |
+| quest | 8 | 18.304 | 12.632 | -5.672 | 1.448999 |
+| quest | 16 | 25.274 | 19.916 | -5.358 | 1.269026 |
+| quest | 32 | 38.622 | 34.503 | -4.119 | 1.119389 |
+| quest | 64 | 65.083 | 64.034 | -1.049 | 1.016378 |
+| quest_topk29 | 1 | 11.267 | 5.867 | -5.400 | 1.920445 |
+| quest_topk29 | 2 | 13.055 | 6.821 | -6.235 | 1.914114 |
+| quest_topk29 | 4 | 14.872 | 8.852 | -6.020 | 1.680163 |
+| quest_topk29 | 8 | 18.313 | 12.536 | -5.777 | 1.460863 |
+| quest_topk29 | 16 | 25.378 | 19.712 | -5.666 | 1.287424 |
+| quest_topk29 | 32 | 38.628 | 34.279 | -4.349 | 1.126883 |
+| quest_topk29 | 64 | 65.007 | 62.905 | -2.102 | 1.033420 |
+
+Display values are 3-decimal-place rounded; `abs diff` and `speedup`
+were computed from the underlying full-precision aggregates (re-deriving
+them from the rounded display columns can give slightly different last-digit
+values).
 
 ## Files
 
