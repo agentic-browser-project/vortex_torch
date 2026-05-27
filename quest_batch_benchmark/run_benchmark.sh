@@ -62,7 +62,7 @@ if [ "$status" -ne 0 ]; then
   exit "$status"
 fi
 
-echo ">>> aggregating dense + quest"
+echo ">>> aggregating dense + quest + quest_topk29"
 "$PY" aggregate_results.py --raw-csv "$RAW" --out-csv "$OUT" || exit 1
 
 echo ">>> running treesparse  (TreeSparseAttention's own environment)"
