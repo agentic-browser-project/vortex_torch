@@ -174,7 +174,8 @@ two-category comparison isolates the effect of the CUDA-graph capture alone.
 | method | no-graph | CUDA graph |
 |---|:---:|:---:|
 | dense (sgl.Engine + flashinfer) | yes | yes |
-| quest (sgl.Engine + vortex sparsity) | yes | yes (verified by bs=2 smoke; full sweep below) |
+| quest, topk_val=64 (sgl.Engine + vortex sparsity) | yes | yes |
+| quest, topk_val=29 (sgl.Engine + vortex sparsity) | yes | yes |
 | TreeSparseAttention (own HF+FlashInfer harness) | yes | **no** |
 
 TreeSparseAttention is excluded from the CUDA-graph category because its
@@ -342,17 +343,17 @@ while kernels compile.
 Three-way decode TPOT (ms/token), `Qwen3-VL-8B-Instruct`, `request.json`
 (9,661 input tokens), 256 output tokens, `repeat=3`, B200:
 
-| batch size | dense TPOT (ms) | quest (topk=64) TPOT (ms) | treesparse TPOT (ms) | quest vs dense | treesparse vs dense |
-|-----------:|----------------:|----------------:|---------------------:|---------------:|--------------------:|
-| 1 | 9.29 | 11.14 | 10.78 | 0.83x | 0.86x |
-| 2 | 10.62 | 13.07 | 13.88 | 0.81x | 0.77x |
-| 4 | 12.22 | 14.87 | 14.32 | 0.82x | 0.85x |
-| 8 | 15.55 | 18.40 | 15.55 | 0.85x | 1.00x |
-| 16 | 22.02 | 25.41 | 16.59 | 0.87x | 1.33x |
-| 32 | 37.51 | 38.68 | 18.58 | 0.97x | 2.02x |
-| 64 | 72.06 | 65.23 | 24.91 | 1.10x | 2.89x |
+| batch size | dense TPOT (ms) | quest (topk=64) TPOT (ms) | quest (topk=29) TPOT (ms) | treesparse TPOT (ms) | quest (topk=64) vs dense | quest (topk=29) vs dense | treesparse vs dense |
+|-----------:|----------------:|-------------------------:|-------------------------:|---------------------:|------------------------:|------------------------:|--------------------:|
+| 1 | 9.14 | 11.23 | 11.27 | 10.90 | 0.81x | 0.81x | 0.84x |
+| 2 | 10.53 | 13.09 | 13.06 | 13.98 | 0.80x | 0.81x | 0.75x |
+| 4 | 12.11 | 14.88 | 14.87 | 14.36 | 0.81x | 0.81x | 0.84x |
+| 8 | 15.54 | 18.30 | 18.31 | 15.52 | 0.85x | 0.85x | 1.00x |
+| 16 | 21.91 | 25.27 | 25.38 | 16.64 | 0.87x | 0.86x | 1.32x |
+| 32 | 37.42 | 38.62 | 38.63 | 18.56 | 0.97x | 0.97x | 2.02x |
+| 64 | 71.88 | 65.08 | 65.01 | 24.86 | 1.10x | 1.11x | 2.89x |
 
-All 21 configurations (3 methods × 7 batch sizes) completed `status=ok`.
+All 28 configurations (4 methods × 7 batch sizes) completed `status=ok`.
 
 ### Fairness contract
 
@@ -377,10 +378,12 @@ engines — cannot be unified): quest/dense run through Quest's
 2.9.1, streaming wall-clock TPOT); TreeSparse runs through its own HuggingFace
 + FlashInfer harness (torch 2.11.0, per-decode-step `cuda.synchronize()`
 timing). Both measure mean decode-step latency excluding the first token.
-Sparsity operating points also differ by design: quest `topk_val=64` (1024
-tokens kept); TreeSparse `top-k=128` chunks (TreeSparse's own `run_batch_experiments.sh
-tpot-no-share` default). These are each method's intended setting — recorded
-transparently, not forced equal.
+Sparsity operating points also differ by design: **quest is measured at
+two operating points** — `topk_val=64` (1024 tokens kept, the original
+headline value) and `topk_val=29` (~464 tokens kept, the vortex_torch
+`get_engine` default) — and TreeSparse at `top-k=128` chunks (its own
+`run_batch_experiments.sh tpot-no-share` default). These are each
+method's intended setting — recorded transparently, not forced equal.
 
 ### Interpretation
 
@@ -389,6 +392,13 @@ parity with dense at batch 8 (1.00×), pulls ahead at batch 16, and reaches
 **2.89× faster than dense at batch 64** — consistent with its tensor-core
 paged-decode design favouring large batches. Quest crosses over dense near
 batch 64 (1.10×).
+
+Quest at `topk_val=29` tracks `topk_val=64` closely in the no-graph category
+(11.27 vs 11.23 ms at bs=1; 65.01 vs 65.08 ms at bs=64) — the tighter KV budget
+yields only ~0.1 ms of savings against quest@64 at bs=64. The two variants reach
+parity with dense around bs=32 together. The benefit of `topk_val=29` is more
+visible under CUDA graph (see the CUDA-graph table above), where the per-step
+indexer cost is amortised.
 
 > **What TreeSparseAttention is.** A standalone sparse-attention library
 > (`/vast/.../sparse_attn/TreeSparseAttention`) — *not* a vortex/sglang
