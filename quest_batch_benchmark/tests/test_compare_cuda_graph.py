@@ -114,3 +114,28 @@ def test_main_exits_on_empty_join(tmp_path, monkeypatch):
     ])
     with pytest.raises(SystemExit, match="no joined rows"):
         compare_main()
+
+
+def test_join_keeps_both_quest_variants(tmp_path):
+    """quest (topk=64) and quest_topk29 join independently — each (attention,
+    batch_size) is its own key, so both variants must appear in the joined
+    output and render distinct rows in the markdown table."""
+    nograph = tmp_path / "nograph.csv"
+    cudagraph = tmp_path / "cudagraph.csv"
+    _write(nograph, [
+        _agg_row("dense", 64, 72.0),
+        _agg_row("quest", 64, 65.0),
+        _agg_row("quest_topk29", 64, 60.0),
+    ], _FIELDS)
+    _write(cudagraph, [
+        _agg_row("dense", 64, 71.0),
+        _agg_row("quest", 64, 63.5),
+        _agg_row("quest_topk29", 64, 58.0),
+    ], _FIELDS)
+    rows = build_comparison_rows(str(nograph), str(cudagraph))
+    by_attn = {r["attention"] for r in rows}
+    assert by_attn == {"dense", "quest", "quest_topk29"}
+    # spot-check one quest_topk29 row's numbers
+    q29 = next(r for r in rows if r["attention"] == "quest_topk29")
+    assert q29["tpot_ms_nograph"] == "60.000"
+    assert q29["tpot_ms_cudagraph"] == "58.000"
