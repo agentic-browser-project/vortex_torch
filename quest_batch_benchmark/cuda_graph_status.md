@@ -12,7 +12,7 @@ flashinfer backend. The harness's `disable_cuda_graph=not args.enable_cuda_graph
 flag flows through both engine constructors (`build_engine_kwargs` and
 `build_get_engine_kwargs`) and is the documented sglang knob for this.
 
-## quest (sgl.Engine + vortex sparsity) — CUDA graph status TBD-by-smoke
+## quest (sgl.Engine + vortex sparsity) — CUDA graph supported (verified by smoke; see end of doc)
 
 Quest's static-block-budget sparse attention runs through the vortex sparsity
 backend. vortex v0.5's `get_engine` hardcodes `disable_cuda_graph=True` as
@@ -82,6 +82,10 @@ TreeSparse is left in the no-graph three-way table only. Reusing TreeSparse's
 no-graph number in the CUDA-graph table would mix categories and mislead the
 reader, so the tables stay separate.
 
-## Quest + CUDA graph — smoke result
+## Quest + CUDA graph — smoke result: PASS
 
-*Filled in by the Task 2 smoke gate.*
+Smoke run: `--attention quest --enable-cuda-graph --batch-sizes 2 --repeat 1`,
+2026-05-27, B200. Status `ok`, TPOT 6.86 ms (compare to the no-graph
+quest@bs2 baseline of 13.07 ms). vortex v0.5's quest sparse path runs cleanly
+under CUDA graph at this configuration; the full sweep in the
+`cuda-graph-second-category` plan proceeds with both dense and quest.
