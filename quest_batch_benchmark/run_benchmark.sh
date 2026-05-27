@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Drive the full three-way batch benchmark: dense + quest, then aggregate, then
-# the TreeSparseAttention run, then the three-way comparison merge.
-# The dense/quest modes each boot their own sgl.Engine and measure decode TPOT
+# Drive the full four-way batch benchmark: dense + quest (topk_val=64) +
+# quest_topk29 (topk_val=29), then aggregate, then the TreeSparseAttention
+# run, then the four-way comparison merge.
+# Each dense/quest mode boots its own sgl.Engine and measures decode TPOT
 # in streaming mode, matching the sgl baseline
 # `run_batch_experiments_offline.sh tpot-no-share`. TreeSparse runs separately
 # via run_treesparse.sh in its own environment.
@@ -88,7 +89,7 @@ if [ "$status" -ne 0 ]; then
 fi
 
 echo ">>> done"
-echo "    raw (dense+quest) : $RAW"
+echo "    raw (dense+quest+quest_topk29) : $RAW"
 echo "    aggregated        : $OUT"
 echo "    treesparse raw    : $BENCH/results/treesparse_raw.json"
 echo "    three-way CSV     : $BENCH/results/tpot_three_way.csv"

@@ -58,21 +58,9 @@ as the `tpot-no-share` baseline.
 
 Full package list: `reference_freeze.txt`.
 
-## Model — now Qwen3-VL-8B-Instruct (apples-to-apples with the baseline)
+## Model — Qwen3-VL-8B-Instruct
 
-**This benchmark uses `Qwen/Qwen3-VL-8B-Instruct`**, the same model as the sgl
-baseline. The v0.3 branch had to substitute `Qwen/Qwen3-8B` because the vortex
-sglang fork (then v0.4.7-based) had no `qwen3_vl` model class. Two things
-changed in v0.5 that removed this limitation:
-
-1. sglang v0.5.9 ships a `qwen3_vl` model class.
-2. A one-line patch to the vortex attention backends (described below) removed
-   the hard guard that blocked multimodal models.
-
-No fallback to Qwen3-8B was required. The model axis now matches the baseline
-exactly, so the comparison is apples-to-apples.
-
-## Vortex attention backend patch — enabling Qwen3-VL
+### Vortex attention backend patch — enabling Qwen3-VL
 
 **What changed:** vortex v0.5's attention backends
 (`vortex_torch/engine/sgl/attention_backend/flashinfer.py` and `trtllm.py`)
@@ -211,24 +199,6 @@ wrapper without overriding the topk.
 
 All 28 configurations (4 methods × 7 batch sizes) completed `status=ok`.
 
-### Interpretation
-
-At small batch sizes Quest is *slower* than dense — its query–envelope
-block-scoring is fixed overhead that, at batch 1–16, outweighs the
-KV-read it saves (decode is weight-bandwidth-bound there, and attention
-is a small fraction). The two modes reach near parity at batch 32 (37.4
-ms vs 38.6 ms), and by **batch 64 Quest is 1.10× faster than dense**
-(71.9 ms vs 65.1 ms): dense TPOT rises steeply as each query reads the
-full ~9.9K-token KV, while Quest reads only its top-`k` blocks.
-
-TreeSparse is roughly tied with quest at batch 1 (~0.86× dense), reaches
-parity with dense at batch 8 (1.00×), pulls ahead at batch 16, and reaches
-**2.89× faster than dense at batch 64** (24.86 ms vs 71.88 ms) —
-consistent with its tensor-core paged-decode design favouring large
-batches.
-
-**`topk_val=29` and `topk_val=64` are indistinguishable in the no-graph category** (within 0.5% at every batch size, e.g. 65.01 vs 65.08 ms at bs=64; both 1.10–1.11× faster than dense at bs=64): the per-step indexer cost dominates the KV-read here, so the tighter budget barely moves TPOT — the effect surfaces under CUDA graph (next section).
-
 ### Fairness contract
 
 **Same input:** all four methods run on `request.json` (the established
@@ -277,13 +247,6 @@ transparently, not forced equal.
 > sglang at all — it is a different engine end-to-end. The four-way table
 > is produced by merging two independent measurements, not by one harness.
 
-**Note on comparability with v0.3 results:** The v0.3 branch ran Qwen3-8B
-on vortex v0.3 + sglang 0.4.x. The numbers from that branch (quest 1.22×
-faster at batch 64) are **not directly comparable** to these v0.5
-numbers — different model, different sglang, different vortex version,
-and the v0.3 sweep predates the `get_engine` wrapper now used as the
-default constructor. The meaningful comparison is dense-vs-quest within
-each branch's own run.
 
 **Note on Triton JIT compilation:** vortex v0.5 is pure-Python + Triton
 (no CUDA extension). The first warmup generate per batch triggers Triton
@@ -291,7 +254,7 @@ kernel compilation; a subsequent identical run will be fast because
 compiled kernels are cached. If re-running from a cold start, expect the
 first batch to be slow while kernels compile.
 
-## Results — CUDA graph on (3 methods)
+## Results — CUDA graph on
 
 Same fairness contract as the no-graph category above (same model, same
 9,661-token input, 256 output tokens, `repeat=3`, same `get_engine`
@@ -315,31 +278,6 @@ per-step Python loop over layers in `decode_step`, and a hardcoded
 
 All 21 configurations completed with `status=ok`.
 
-### Interpretation
-
-CUDA graph buys the most at small batch — quest goes from 11.23 → 5.92 ms
-at bs=1 (1.90× faster than its no-graph time) and dense from 9.14 → 5.60
-ms (1.63×). The speedup decays monotonically with batch size as kernel
-time amortizes the per-step launch overhead that the graph replays in one
-shot; by bs=64 both modes converge to ~1.01–1.03× (quest 65.08 → 64.03,
-dense 71.88 → 71.15). The dense-vs-quest crossover within the CUDA-graph
-category shifts **earlier** (quest reaches parity with dense from bs=8
-onward at 12.63 vs 12.85 ms, where in the no-graph category quest only
-reaches parity around bs=32) — graph capture removes the per-step launch
-overhead that previously masked quest's attention-time savings at
-moderate batch sizes.
-
-Quest at `topk_val=29` edges `topk_val=64` by a small, batch-growing margin under CUDA graph (~0.05 ms at bs=1 to ~1.1 ms at bs=64; ~1.7% faster at bs=64) — graph capture amortises the per-step indexer cost that masked the tighter budget's KV-read savings under no-graph. Both Quest variants cross dense from bs=8 onward, and quest@29 reaches **1.13× faster than dense at bs=64** (vs quest@64's 1.11×).
-
-Practical caveat: CUDA-graph capture is a one-time cost that lands in the
-first repeat's TTFT (rep0 carries ~200 ms extra TTFT at bs=64 vs
-rep1/rep2), not in TPOT, since TPOT excludes the first token by
-construction. The bs=64 TPOT means are robust. The no-graph and CUDA-graph
-categories were measured in separate physical runs (no-graph first, then
-CUDA-graph), so the comparison absorbs whatever B200 thermal/hardware
-variance exists between the two run-times — within-run repeat noise is
-≤2% for every configuration, well below the smallest observed
-cross-category delta.
 
 ## Reproduce
 
