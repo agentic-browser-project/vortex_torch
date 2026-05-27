@@ -24,19 +24,48 @@ TS="$(date +%Y%m%d_%H%M%S)"
 mkdir -p results logs
 rm -f "$RAW"   # fresh raw CSV; harness appends per mode
 
-for mode in dense quest; do
-    echo ">>> running $mode --enable-cuda-graph  (GPU $GPU)"
-    CUDA_VISIBLE_DEVICES="$GPU" "$PY" benchmark_quest_tpot.py \
-        --attention "$mode" \
-        --enable-cuda-graph \
-        --raw-csv "$RAW" \
-        2>&1 | tee "logs/${mode}_cudagraph_${TS}.log"
-    status=${PIPESTATUS[0]}
-    if [ "$status" -ne 0 ]; then
-        echo "!!! $mode (cudagraph) failed (exit $status) -- see logs/${mode}_cudagraph_${TS}.log" >&2
-        exit "$status"
-    fi
-done
+# Three modes under --enable-cuda-graph: dense, quest topk_val=64, quest
+# topk_val=29. Same fairness contract as the no-graph driver: single physical
+# run, --label isolates the second quest variant in the raw CSV.
+
+echo ">>> running dense --enable-cuda-graph  (GPU $GPU)"
+CUDA_VISIBLE_DEVICES="$GPU" "$PY" benchmark_quest_tpot.py \
+    --attention dense \
+    --enable-cuda-graph \
+    --raw-csv "$RAW" \
+    2>&1 | tee "logs/dense_cudagraph_${TS}.log"
+status=${PIPESTATUS[0]}
+if [ "$status" -ne 0 ]; then
+    echo "!!! dense (cudagraph) failed (exit $status) -- see logs/dense_cudagraph_${TS}.log" >&2
+    exit "$status"
+fi
+
+echo ">>> running quest (topk_val=64) --enable-cuda-graph  (GPU $GPU)"
+CUDA_VISIBLE_DEVICES="$GPU" "$PY" benchmark_quest_tpot.py \
+    --attention quest \
+    --topk-val 64 \
+    --enable-cuda-graph \
+    --raw-csv "$RAW" \
+    2>&1 | tee "logs/quest_cudagraph_${TS}.log"
+status=${PIPESTATUS[0]}
+if [ "$status" -ne 0 ]; then
+    echo "!!! quest (topk=64, cudagraph) failed (exit $status) -- see logs/quest_cudagraph_${TS}.log" >&2
+    exit "$status"
+fi
+
+echo ">>> running quest_topk29 (topk_val=29) --enable-cuda-graph  (GPU $GPU)"
+CUDA_VISIBLE_DEVICES="$GPU" "$PY" benchmark_quest_tpot.py \
+    --attention quest \
+    --topk-val 29 \
+    --label quest_topk29 \
+    --enable-cuda-graph \
+    --raw-csv "$RAW" \
+    2>&1 | tee "logs/quest_topk29_cudagraph_${TS}.log"
+status=${PIPESTATUS[0]}
+if [ "$status" -ne 0 ]; then
+    echo "!!! quest_topk29 (cudagraph) failed (exit $status) -- see logs/quest_topk29_cudagraph_${TS}.log" >&2
+    exit "$status"
+fi
 
 echo ">>> aggregating cudagraph"
 "$PY" aggregate_results.py --raw-csv "$RAW" --out-csv "$OUT" || exit 1
