@@ -48,13 +48,15 @@ def test_merge_sorted_by_batch_then_method(tmp_path):
     qcsv, tjson = tmp_path / "q.csv", tmp_path / "t.json"
     _write_quest_csv(qcsv, [
         _agg_row("dense", 1, 9.5), _agg_row("quest", 1, 10.9),
+        _agg_row("quest_topk29", 1, 10.3),
         _agg_row("dense", 8, 15.0), _agg_row("quest", 8, 17.8),
+        _agg_row("quest_topk29", 8, 16.4),
     ])
     tjson.write_text(json.dumps({"1": _ts_entry(11.0), "8": _ts_entry(25.6)}))
     rows = merge(str(qcsv), str(tjson), [1, 8], top_k=128)
     assert [(int(r["batch_size"]), r["attention"]) for r in rows] == [
-        (1, "dense"), (1, "quest"), (1, "treesparse"),
-        (8, "dense"), (8, "quest"), (8, "treesparse"),
+        (1, "dense"), (1, "quest"), (1, "quest_topk29"), (1, "treesparse"),
+        (8, "dense"), (8, "quest"), (8, "quest_topk29"), (8, "treesparse"),
     ]
 
 
@@ -105,9 +107,9 @@ def test_load_aggregated_keeps_quest_topk29(tmp_path):
 
 
 def test_format_table_includes_quest_topk29_column(tmp_path):
-    """The markdown table now has 5 numeric columns: dense, quest (topk=64),
-    quest (topk=29), treesparse, plus quest-vs-dense and quest_topk29-vs-dense
-    and treesparse-vs-dense speedups."""
+    """The markdown table now has 7 data columns: 4 TPOT (dense, quest topk=64,
+    quest topk=29, treesparse) plus 3 vs-dense speedups (quest topk=64, quest
+    topk=29, treesparse)."""
     qcsv, tjson = tmp_path / "q.csv", tmp_path / "t.json"
     _write_quest_csv(qcsv, [
         _agg_row("dense", 1, 10.0),
