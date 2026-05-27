@@ -65,7 +65,7 @@ def test_format_table_lists_three_tpots_and_speedups(tmp_path):
     rows = merge(str(qcsv), str(tjson), [1], top_k=128)
     table = format_table(rows, [1])
     # dense 10, quest 20, treesparse 5 -> quest 0.50x, treesparse 2.00x vs dense
-    assert "| 1 | 10.00 | 20.00 | 5.00 | 0.50x | 2.00x |" in table
+    assert "| 1 | 10.00 | 20.00 | — | 5.00 | 0.50x | — | 2.00x |" in table
 
 
 def test_format_table_handles_missing_treesparse_batch(tmp_path):
@@ -74,7 +74,7 @@ def test_format_table_handles_missing_treesparse_batch(tmp_path):
     tjson.write_text(json.dumps({}))   # TreeSparse OOMed before bs 64
     rows = merge(str(qcsv), str(tjson), [64], top_k=128)
     table = format_table(rows, [64])
-    assert "| 64 | 71.80 | 64.70 | — | 1.11x | — |" in table
+    assert "| 64 | 71.80 | 64.70 | — | — | 1.11x | — | — |" in table
 
 
 def test_load_aggregated_filters_other_methods(tmp_path):
@@ -87,3 +87,37 @@ def test_load_aggregated_filters_other_methods(tmp_path):
     ])
     rows = load_aggregated(str(qcsv))
     assert [r["attention"] for r in rows] == ["dense", "quest"]
+
+
+def test_load_aggregated_keeps_quest_topk29(tmp_path):
+    """quest_topk29 must survive the filter that previously dropped non-quest/dense
+    rows; build_comparison.py now treats it as a first-class quest variant."""
+    qcsv = tmp_path / "q.csv"
+    _write_quest_csv(qcsv, [
+        _agg_row("dense", 1, 9.5),
+        _agg_row("quest", 1, 11.1),
+        _agg_row("quest_topk29", 1, 10.3),
+    ])
+    rows = load_aggregated(str(qcsv))
+    assert sorted(r["attention"] for r in rows) == [
+        "dense", "quest", "quest_topk29",
+    ]
+
+
+def test_format_table_includes_quest_topk29_column(tmp_path):
+    """The markdown table now has 5 numeric columns: dense, quest (topk=64),
+    quest (topk=29), treesparse, plus quest-vs-dense and quest_topk29-vs-dense
+    and treesparse-vs-dense speedups."""
+    qcsv, tjson = tmp_path / "q.csv", tmp_path / "t.json"
+    _write_quest_csv(qcsv, [
+        _agg_row("dense", 1, 10.0),
+        _agg_row("quest", 1, 20.0),
+        _agg_row("quest_topk29", 1, 8.0),
+    ])
+    tjson.write_text(json.dumps({"1": _ts_entry(5.0)}))
+    rows = merge(str(qcsv), str(tjson), [1], top_k=128)
+    table = format_table(rows, [1])
+    # dense=10, quest=20 (0.50x), quest_topk29=8 (1.25x), treesparse=5 (2.00x)
+    assert "quest (topk=29)" in table
+    assert ("| 1 | 10.00 | 20.00 | 8.00 | 5.00 | 0.50x | 1.25x | 2.00x |"
+            in table)

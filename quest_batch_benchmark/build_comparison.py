@@ -16,14 +16,14 @@ from aggregate_results import OUT_FIELDS
 from treesparse_results import treesparse_rows
 
 # render order within each batch size
-_METHOD_ORDER = {"dense": 0, "quest": 1, "treesparse": 2}
+_METHOD_ORDER = {"dense": 0, "quest": 1, "quest_topk29": 2, "treesparse": 3}
 
 
 def load_aggregated(csv_path: str) -> list[dict]:
-    """dense + quest rows from the quest benchmark's aggregated CSV."""
+    """dense + quest + quest_topk29 rows from the quest benchmark's aggregated CSV."""
     with open(csv_path, newline="", encoding="utf-8") as f:
         return [r for r in csv.DictReader(f)
-                if r["attention"] in ("dense", "quest")]
+                if r["attention"] in ("dense", "quest", "quest_topk29")]
 
 
 def merge(quest_csv: str, treesparse_json: str, batch_sizes: list[int],
@@ -48,26 +48,36 @@ def _tpot(rows: list[dict], attention: str, bs: int):
 
 
 def format_table(rows: list[dict], batch_sizes: list[int]) -> str:
-    """Markdown TPOT table: dense / quest / treesparse + speedups vs dense."""
+    """Markdown TPOT table: dense / quest (topk=64) / quest (topk=29) /
+    treesparse + speedups vs dense for the three sparse methods."""
     header = (
-        "| batch size | dense TPOT (ms) | quest TPOT (ms) "
-        "| treesparse TPOT (ms) | quest vs dense | treesparse vs dense |"
+        "| batch size | dense TPOT (ms) | quest (topk=64) TPOT (ms) "
+        "| quest (topk=29) TPOT (ms) | treesparse TPOT (ms) "
+        "| quest (topk=64) vs dense | quest (topk=29) vs dense "
+        "| treesparse vs dense |"
     )
     sep = (
         "|-----------:|----------------:|----------------:"
-        "|---------------------:|---------------:|--------------------:|"
+        "|----------------:|---------------------:"
+        "|---------------:|---------------:|--------------------:|"
     )
     lines = [header, sep]
     for bs in sorted(batch_sizes):
         d = _tpot(rows, "dense", bs)
         q = _tpot(rows, "quest", bs)
+        q29 = _tpot(rows, "quest_topk29", bs)
         t = _tpot(rows, "treesparse", bs)
         ds = f"{d:.2f}" if d is not None else "—"
         qs = f"{q:.2f}" if q is not None else "—"
+        q29s = f"{q29:.2f}" if q29 is not None else "—"
         ts = f"{t:.2f}" if t is not None else "—"
         qsp = f"{d / q:.2f}x" if (d is not None and q) else "—"
+        q29sp = f"{d / q29:.2f}x" if (d is not None and q29) else "—"
         tsp = f"{d / t:.2f}x" if (d is not None and t) else "—"
-        lines.append(f"| {bs} | {ds} | {qs} | {ts} | {qsp} | {tsp} |")
+        lines.append(
+            f"| {bs} | {ds} | {qs} | {q29s} | {ts} "
+            f"| {qsp} | {q29sp} | {tsp} |"
+        )
     return "\n".join(lines)
 
 
