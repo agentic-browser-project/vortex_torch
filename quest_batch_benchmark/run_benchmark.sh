@@ -19,18 +19,48 @@ TS="$(date +%Y%m%d_%H%M%S)"
 mkdir -p results logs
 rm -f "$RAW"   # fresh raw CSV; harness appends per mode
 
-for mode in dense quest; do
-  echo ">>> running $mode  (GPU $GPU)"
-  CUDA_VISIBLE_DEVICES="$GPU" "$PY" benchmark_quest_tpot.py \
-    --attention "$mode" \
-    --raw-csv "$RAW" \
-    2>&1 | tee "logs/${mode}_${TS}.log"
-  status=${PIPESTATUS[0]}
-  if [ "$status" -ne 0 ]; then
-    echo "!!! $mode run failed (exit $status) -- see logs/${mode}_${TS}.log" >&2
-    exit "$status"
-  fi
-done
+# Three modes: dense, quest with topk_val=64 (headline), quest with topk_val=29
+# (the vortex_torch get_engine default). All three share machine state so the
+# cross-method comparison is on a single physical run. The --label flag on the
+# third invocation puts quest_topk29 into its own (attention, batch_size) group
+# in the raw CSV — aggregate_results.py groups by `attention`, so the two quest
+# variants don't collide.
+
+echo ">>> running dense  (GPU $GPU)"
+CUDA_VISIBLE_DEVICES="$GPU" "$PY" benchmark_quest_tpot.py \
+  --attention dense \
+  --raw-csv "$RAW" \
+  2>&1 | tee "logs/dense_${TS}.log"
+status=${PIPESTATUS[0]}
+if [ "$status" -ne 0 ]; then
+  echo "!!! dense run failed (exit $status) -- see logs/dense_${TS}.log" >&2
+  exit "$status"
+fi
+
+echo ">>> running quest (topk_val=64)  (GPU $GPU)"
+CUDA_VISIBLE_DEVICES="$GPU" "$PY" benchmark_quest_tpot.py \
+  --attention quest \
+  --topk-val 64 \
+  --raw-csv "$RAW" \
+  2>&1 | tee "logs/quest_${TS}.log"
+status=${PIPESTATUS[0]}
+if [ "$status" -ne 0 ]; then
+  echo "!!! quest (topk=64) run failed (exit $status) -- see logs/quest_${TS}.log" >&2
+  exit "$status"
+fi
+
+echo ">>> running quest_topk29 (topk_val=29 = vortex_torch get_engine default)  (GPU $GPU)"
+CUDA_VISIBLE_DEVICES="$GPU" "$PY" benchmark_quest_tpot.py \
+  --attention quest \
+  --topk-val 29 \
+  --label quest_topk29 \
+  --raw-csv "$RAW" \
+  2>&1 | tee "logs/quest_topk29_${TS}.log"
+status=${PIPESTATUS[0]}
+if [ "$status" -ne 0 ]; then
+  echo "!!! quest_topk29 run failed (exit $status) -- see logs/quest_topk29_${TS}.log" >&2
+  exit "$status"
+fi
 
 echo ">>> aggregating dense + quest"
 "$PY" aggregate_results.py --raw-csv "$RAW" --out-csv "$OUT" || exit 1
