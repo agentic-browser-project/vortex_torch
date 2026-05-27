@@ -23,10 +23,19 @@ _OUT_FIELDS = [
 
 
 def _load(path: str) -> Dict[tuple, Dict[str, str]]:
-    """Return {(attention, batch_size_int): row} from an aggregated CSV."""
+    """Return {(attention, batch_size_int): row} from an aggregated CSV.
+
+    Skips rows whose status is 'error' or whose tpot_ms_mean is blank --
+    aggregate_results.py emits a row with empty metric columns for any
+    (attention, batch_size) group whose repeats all errored. Treating those
+    as missing measurements (drop, don't crash) is symmetric with the
+    inner-join "missing pair" semantics in build_comparison_rows.
+    """
     out: Dict[tuple, Dict[str, str]] = {}
     with open(path, newline="", encoding="utf-8") as f:
         for r in csv.DictReader(f):
+            if r.get("status") == "error" or not r.get("tpot_ms_mean"):
+                continue
             out[(r["attention"], int(r["batch_size"]))] = r
     return out
 

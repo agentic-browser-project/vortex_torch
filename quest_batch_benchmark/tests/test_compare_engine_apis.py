@@ -48,6 +48,8 @@ def test_join_matches_on_attention_and_batch(tmp_path):
     assert by_bs[1]["tpot_ms_direct"] == "11.000"
     assert by_bs[1]["tpot_ms_get_engine"] == "11.200"
     assert abs(float(by_bs[1]["abs_diff_ms"]) - 0.2) < 1e-9
+    # tolerance 1e-5 (not 1e-9) because the row stores ratio with :.6f
+    # precision -- 11.2/11.0 round-trips through "1.018182" with ~1.8e-7 error.
     assert abs(float(by_bs[1]["ratio_get_engine_over_direct"]) - (11.2 / 11.0)) < 1e-5
 
 
@@ -73,3 +75,39 @@ def test_markdown_table_has_expected_header(tmp_path):
     assert "| attention | batch size | direct TPOT (ms) | get_engine TPOT (ms) | abs diff (ms) | get_engine / direct |" in md
     assert "quest" in md
     assert "11.000" in md
+
+
+def test_error_rows_are_dropped(tmp_path):
+    """A status=error row (blank tpot_ms_mean) drops out instead of crashing."""
+    direct = tmp_path / "direct.csv"
+    gengine = tmp_path / "gengine.csv"
+    bad_row = dict(_agg_row("quest", 64, 0.0))
+    bad_row["status"] = "error"
+    bad_row["tpot_ms_mean"] = ""  # aggregate_results.py shape for error groups
+    _write(direct, [_agg_row("quest", 1, 11.0), bad_row], _FIELDS)
+    _write(gengine, [_agg_row("quest", 1, 11.2), bad_row], _FIELDS)
+    rows = build_comparison_rows(str(direct), str(gengine))
+    # bs=64 dropped on both sides; bs=1 still joins cleanly.
+    assert len(rows) == 1
+    assert int(rows[0]["batch_size"]) == 1
+
+
+def test_main_exits_on_empty_join(tmp_path, monkeypatch):
+    """main() raises SystemExit if no (attention, batch_size) keys overlap."""
+    import pytest
+    from compare_engine_apis import main as compare_main
+
+    direct = tmp_path / "direct.csv"
+    gengine = tmp_path / "gengine.csv"
+    _write(direct, [_agg_row("dense", 1, 9.0)], _FIELDS)
+    _write(gengine, [_agg_row("quest", 1, 11.2)], _FIELDS)  # no overlap
+
+    monkeypatch.setattr("sys.argv", [
+        "compare_engine_apis.py",
+        "--direct-csv", str(direct),
+        "--get-engine-csv", str(gengine),
+        "--out-csv", str(tmp_path / "out.csv"),
+        "--out-md", str(tmp_path / "out.md"),
+    ])
+    with pytest.raises(SystemExit, match="no joined rows"):
+        compare_main()
