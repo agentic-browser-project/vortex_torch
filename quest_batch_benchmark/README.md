@@ -265,15 +265,21 @@ Mean decode TPOT (ms/token) on the B200, `Qwen3-VL-8B-Instruct`,
 Quest `topk_val=64`, measured through Quest's `vortex_torch.engine.sgl.get_engine`
 wrapper (`tpot-no-share` config):
 
-| batch size | dense TPOT | quest TPOT | quest speedup |
-|-----------:|-----------:|-----------:|--------------:|
-| 1  |  9.29 | 11.14 | 0.83x |
-| 2  | 10.62 | 13.07 | 0.81x |
-| 4  | 12.22 | 14.87 | 0.82x |
-| 8  | 15.55 | 18.40 | 0.85x |
-| 16 | 22.02 | 25.41 | 0.87x |
-| 32 | 37.51 | 38.68 | 0.97x |
-| 64 | 72.06 | 65.23 | 1.10x |
+The `quest (topk=64)` column is the headline Quest configuration (1024
+tokens kept per query, the value used in the original v0.5 benchmark);
+`quest (topk=29)` is Quest at the **vortex_torch `get_engine` default**
+(`vortex_topk_val=29`, ~464 tokens kept) — what an out-of-the-box user
+sees if they call the wrapper without overriding the topk.
+
+| batch size | dense TPOT | quest (topk=64) TPOT | quest (topk=64) speedup | quest (topk=29) TPOT | quest (topk=29) speedup |
+|-----------:|-----------:|---------------------:|------------------------:|---------------------:|------------------------:|
+|  1 |  9.14 | 11.23 | 0.81x | 11.27 | 0.81x |
+|  2 | 10.53 | 13.09 | 0.80x | 13.06 | 0.81x |
+|  4 | 12.11 | 14.88 | 0.81x | 14.87 | 0.81x |
+|  8 | 15.54 | 18.30 | 0.85x | 18.31 | 0.85x |
+| 16 | 21.91 | 25.27 | 0.87x | 25.38 | 0.86x |
+| 32 | 37.42 | 38.62 | 0.97x | 38.63 | 0.97x |
+| 64 | 71.88 | 65.08 | 1.10x | 65.01 | 1.11x |
 
 All 14 configurations completed with `status=ok` — the KV pool held every batch
 size.
@@ -290,6 +296,16 @@ The crossover at batch 32–64 (rather than batch 16 as in v0.3/Qwen3-8B) is
 consistent with Qwen3-VL-8B's multimodal scaffolding adding a small but
 nonzero overhead to each decode step; this shifts the point where attention
 (which Quest reduces) becomes the dominant cost.
+
+**Quest at `topk_val=29` is essentially indistinguishable from `topk_val=64` in
+the no-graph category** — TPOT differs by less than 0.4% at every batch size
+(e.g. 65.01 ms vs 65.08 ms at bs=64). The tighter KV budget (~464 tokens kept
+instead of 1024) should mean less KV-read work, but in this regime the per-step
+block-scoring / indexer cost dominates the read cost, so the budget choice
+barely moves TPOT. Both Quest variants reach parity with dense around bs=32 and
+cross over (~1.10–1.11× faster) at bs=64. Under CUDA graph (next category), the
+indexer overhead is amortised by graph capture and the tighter budget *does*
+start to surface as a small win — see below.
 
 **Note on comparability with v0.3 results:** The v0.3 branch ran
 Qwen3-8B on vortex v0.3 + sglang 0.4.x. The numbers from that branch (quest
