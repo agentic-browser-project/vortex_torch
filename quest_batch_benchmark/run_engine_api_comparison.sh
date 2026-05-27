@@ -43,6 +43,11 @@ echo ">>> building engine-API comparison"
     --out-csv "$BENCH/results/engine_api_comparison.csv" \
     --out-md "$BENCH/results/engine_api_comparison.md" \
     2>&1 | tee "logs/engine_api_comparison_${TS}.log"
+status=${PIPESTATUS[0]}
+if [ "$status" -ne 0 ]; then
+    echo "!!! engine-API comparison failed (exit $status) -- see logs/engine_api_comparison_${TS}.log" >&2
+    exit "$status"
+fi
 
 echo ">>> done"
 echo "    direct raw       : $BENCH/results/raw_results_direct.csv"
