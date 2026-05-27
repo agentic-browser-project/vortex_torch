@@ -80,7 +80,7 @@ def test_format_table_handles_missing_treesparse_batch(tmp_path):
 
 
 def test_load_aggregated_filters_other_methods(tmp_path):
-    # only dense/quest rows survive; a stray third-method row is dropped
+    # only dense/quest/quest_topk29 rows survive; an unrecognised label is dropped
     qcsv = tmp_path / "q.csv"
     _write_quest_csv(qcsv, [
         _agg_row("dense", 1, 9.5),
