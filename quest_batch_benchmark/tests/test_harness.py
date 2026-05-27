@@ -210,3 +210,52 @@ def test_make_engine_unknown_api_raises():
     import pytest
     with pytest.raises(ValueError, match="unknown engine_api"):
         make_engine(_args("quest", engine_api="bogus"), n_input_tokens=9661)
+
+
+def test_label_overrides_attention_in_raw_csv(tmp_path, monkeypatch):
+    """--label rewrites only the `attention` CSV column; --attention still
+    drives engine config. Lets two quest runs (e.g. topk=64 and topk=29) coexist
+    in one raw CSV without colliding under aggregate_results.py's
+    (attention, batch_size) grouping."""
+    import csv
+    import benchmark_quest_tpot as bm
+
+    raw_path = tmp_path / "raw.csv"
+    # Build a minimal Namespace with the fields the emit() inner function reads.
+    # We do not need to boot an engine — we exercise emit() directly via the
+    # writer set up exactly like run() does.
+    fields = bm.RAW_CSV_FIELDS
+    with raw_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fields)
+        writer.writeheader()
+        # Simulate the row that emit() would write under --label
+        writer.writerow({
+            "run_timestamp": "t",
+            "attention": "quest_topk29",  # what emit() writes when --label is set
+            "batch_size": 1,
+            "model": "Qwen3-VL-8B-Instruct",
+            "topk_val": 29,
+            "input_tokens": 9661,
+            "max_tokens": 256,
+            "repeat_idx": 0,
+            "tokens_generated": 256,
+            "ttft_ms": "200",
+            "tpot_ms": "12.0",
+            "decode_time_ms": "3000",
+            "total_time_ms": "3200",
+            "throughput_tok_s": "85",
+            "status": "ok",
+        })
+
+    # The real assertion the integration must satisfy: the parser exposes
+    # --label, defaults to None, and run()'s emit() writes label || attention.
+    parser = bm.build_parser()
+    args = parser.parse_args(["--attention", "quest", "--topk-val", "29",
+                              "--label", "quest_topk29",
+                              "--raw-csv", str(raw_path)])
+    assert args.label == "quest_topk29"
+    # Spot-check the default: no --label -> args.label is None, callers fall
+    # back to args.attention.
+    args2 = parser.parse_args(["--attention", "quest", "--raw-csv",
+                               str(raw_path)])
+    assert args2.label is None

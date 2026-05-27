@@ -387,7 +387,7 @@ def run(args) -> None:
             def emit(batch_size, repeat_idx, metrics, status):
                 row = {
                     "run_timestamp": run_ts,
-                    "attention": args.attention,
+                    "attention": args.label if args.label else args.attention,
                     "batch_size": batch_size,
                     "model": model_tag,
                     "topk_val": args.topk_val if args.attention == "quest" else "",
@@ -465,6 +465,13 @@ def build_parser() -> argparse.ArgumentParser:
                    default=DEFAULT_BATCH_SIZES)
     p.add_argument("--topk-val", type=int, default=64,
                    help="Quest static block budget (blocks of 16 tokens kept).")
+    p.add_argument("--label", default=None,
+                   help="Override the value written to the `attention` column "
+                        "of the raw CSV. Defaults to --attention. Use this to "
+                        "run a second quest variant (e.g. --label quest_topk29 "
+                        "with --topk-val 29) so its rows don't collide with the "
+                        "headline `quest` (topk_val=64) rows under "
+                        "aggregate_results.py's (attention, batch_size) grouping.")
     p.add_argument("--max-tokens", type=int, default=256,
                    help="Output tokens generated per request (matches the baseline).")
     p.add_argument("--repeat", type=int, default=3,
