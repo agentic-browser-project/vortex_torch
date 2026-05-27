@@ -192,17 +192,17 @@ Same fairness contract as the no-graph table (`Qwen3-VL-8B-Instruct`,
 Quest `topk_val=64`, B200, `get_engine` wrapper), with
 `disable_cuda_graph=False`:
 
-| batch size | dense TPOT | quest TPOT | quest speedup |
-|-----------:|-----------:|-----------:|--------------:|
-| 1  |  5.68 |  5.83 | 0.97x |
-| 2  |  6.68 |  6.84 | 0.98x |
-| 4  |  8.79 |  8.86 | 0.99x |
-| 8  | 12.89 | 12.58 | 1.02x |
-| 16 | 20.71 | 19.74 | 1.05x |
-| 32 | 36.77 | 34.32 | 1.07x |
-| 64 | 71.18 | 63.56 | 1.12x |
+| batch size | dense TPOT | quest (topk=64) TPOT | quest (topk=64) speedup | quest (topk=29) TPOT | quest (topk=29) speedup |
+|-----------:|-----------:|---------------------:|------------------------:|---------------------:|------------------------:|
+|  1 |  5.60 |  5.92 | 0.95x |  5.87 | 0.95x |
+|  2 |  6.61 |  6.93 | 0.95x |  6.82 | 0.97x |
+|  4 |  8.71 |  8.96 | 0.97x |  8.85 | 0.98x |
+|  8 | 12.85 | 12.63 | 1.02x | 12.54 | 1.03x |
+| 16 | 20.71 | 19.92 | 1.04x | 19.71 | 1.05x |
+| 32 | 36.71 | 34.50 | 1.06x | 34.28 | 1.07x |
+| 64 | 71.15 | 64.03 | 1.11x | 62.91 | 1.13x |
 
-All 14 configurations completed with `status=ok`.
+All 21 configurations completed with `status=ok`.
 
 ### CUDA-graph vs no-graph (same method)
 
@@ -244,6 +244,16 @@ both modes converge to ~1.01-1.03× (quest 65.23 → 63.56, dense 72.06 →
 12.89 ms, where in the no-graph category quest only reaches parity around
 bs=32) — graph capture removes the per-step launch overhead that
 previously masked quest's attention-time savings at moderate batch sizes.
+
+Quest at `topk_val=29` outperforms `topk_val=64` by a small but consistent margin
+under CUDA graph: at bs=64 quest@29 is 62.91 ms vs quest@64's 64.03 ms (~1.7%
+faster), and the gap is monotonically larger as batch grows (0.16 ms at bs=1, 1.12 ms
+at bs=64). This is the mirror image of the no-graph observation that the two
+variants are indistinguishable — graph capture amortises the per-step
+block-scoring overhead that previously masked the tighter budget's KV-read
+savings. Both Quest variants reach parity with dense at bs=8 (quest@29 12.54 vs
+dense 12.85; quest@64 12.63 vs dense 12.85) and quest@29 reaches **1.13× faster
+than dense at bs=64**, edging quest@64's 1.11×.
 
 Practical caveat: CUDA-graph capture is a one-time cost that lands in the
 first repeat's TTFT (rep0 carries ~200 ms extra TTFT at bs=64 vs rep1/rep2),
