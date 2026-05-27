@@ -242,24 +242,24 @@ values).
 
 ### Interpretation
 
-CUDA graph buys the most at small batch — quest goes from 11.14 → 5.83 ms
-at bs=1 (1.91× faster) and dense from 9.29 → 5.68 ms (1.63×). The speedup
+CUDA graph buys the most at small batch — quest goes from 11.23 → 5.92 ms
+at bs=1 (1.90× faster) and dense from 9.14 → 5.60 ms (1.63×). The speedup
 decays monotonically with batch size as kernel time amortizes the
 per-step launch overhead that the graph replays in one shot; by bs=64
-both modes converge to ~1.01-1.03× (quest 65.23 → 63.56, dense 72.06 →
-71.18). The dense-vs-quest crossover within the CUDA-graph category shifts
-**earlier** (quest reaches parity with dense from bs=8 onward at 12.58 vs
-12.89 ms, where in the no-graph category quest only reaches parity around
+both modes converge to ~1.01-1.03× (quest 65.08 → 64.03, dense 71.88 →
+71.15). The dense-vs-quest crossover within the CUDA-graph category shifts
+**earlier** (quest reaches parity with dense from bs=8 onward at 12.63 vs
+12.85 ms, where in the no-graph category quest only reaches parity around
 bs=32) — graph capture removes the per-step launch overhead that
 previously masked quest's attention-time savings at moderate batch sizes.
 
 Quest at `topk_val=29` outperforms `topk_val=64` by a small but consistent margin
 under CUDA graph: at bs=64 quest@29 is 62.91 ms vs quest@64's 64.03 ms (~1.7%
-faster), and the gap is monotonically larger as batch grows (0.16 ms at bs=1, 1.12 ms
-at bs=64). This is the mirror image of the no-graph observation that the two
-variants are indistinguishable — graph capture amortises the per-step
-block-scoring overhead that previously masked the tighter budget's KV-read
-savings. Both Quest variants reach parity with dense at bs=8 (quest@29 12.54 vs
+faster). The gap rises broadly with batch size — from ~0.05 ms at bs=1 to ~1.1 ms
+at bs=64 — though not monotonically (it dips slightly at bs=8). This is the mirror
+image of the no-graph observation that the two variants are indistinguishable —
+graph capture amortises the per-step block-scoring overhead that previously masked
+the tighter budget's KV-read savings. Both Quest variants reach parity with dense at bs=8 (quest@29 12.54 vs
 dense 12.85; quest@64 12.63 vs dense 12.85) and quest@29 reaches **1.13× faster
 than dense at bs=64**, edging quest@64's 1.11×.
 
@@ -299,14 +299,14 @@ sees if they call the wrapper without overriding the topk.
 | 32 | 37.42 | 38.62 | 0.97x | 38.63 | 0.97x |
 | 64 | 71.88 | 65.08 | 1.10x | 65.01 | 1.11x |
 
-All 14 configurations completed with `status=ok` — the KV pool held every batch
+All 21 configurations completed with `status=ok` — the KV pool held every batch
 size.
 
 **Interpretation:** At small batch sizes Quest is *slower* than dense — its
 query–envelope block-scoring is fixed overhead that, at batch 1–16, outweighs
 the KV-read it saves (decode is weight-bandwidth-bound there, and attention is a
-small fraction). The two modes reach near parity at **batch 32** (37.5 ms vs
-38.7 ms), and by **batch 64 Quest is 1.10x faster** (72.1 ms vs 65.2 ms): dense
+small fraction). The two modes reach near parity at **batch 32** (37.4 ms vs
+38.6 ms), and by **batch 64 Quest is 1.10x faster** (71.9 ms vs 65.1 ms): dense
 TPOT rises steeply as each query reads the full ~9.9K-token KV, while Quest
 reads only its top-`k` blocks.
 
@@ -316,7 +316,7 @@ nonzero overhead to each decode step; this shifts the point where attention
 (which Quest reduces) becomes the dominant cost.
 
 **Quest at `topk_val=29` is essentially indistinguishable from `topk_val=64` in
-the no-graph category** — TPOT differs by less than 0.4% at every batch size
+the no-graph category** — TPOT differs by less than 0.5% at every batch size
 (e.g. 65.01 ms vs 65.08 ms at bs=64). The tighter KV budget (~464 tokens kept
 instead of 1024) should mean less KV-read work, but in this regime the per-step
 block-scoring / indexer cost dominates the read cost, so the budget choice
