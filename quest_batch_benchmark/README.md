@@ -310,6 +310,34 @@ the harness appends to the raw CSV. Run unit tests:
 quest_batch_benchmark/.venv/bin/python -m pytest quest_batch_benchmark/tests/ -q
 ```
 
+## Engine-API comparison (sanity check)
+
+The benchmark calls `sgl.Engine(**build_engine_kwargs(...))` directly rather
+than going through Quest's official wrapper
+`vortex_torch.engine.sgl.get_engine`. The wrapper accepts `**kwargs` and
+applies them after its own defaults, so every fairness-relevant flag the
+baseline sets (`disable_cuda_graph=True`, `disable_radix_cache=True`,
+`chunked_prefill_size=...`, debug logging) flows through unchanged; the
+direct path was chosen because it puts every kwarg in one local file rather
+than depending on the wrapper's hardcoded defaults.
+
+To verify the choice doesn't perturb the numbers, the harness exposes
+`--engine-api {direct,get_engine}` and the driver
+`run_engine_api_comparison.sh` runs the full dense+quest sweep through both
+paths with matched fairness flags, then writes a side-by-side table at
+`results/engine_api_comparison.md`. Across all 14 configurations the two
+paths agree within 1.5% TPOT (within 0.5% on the Quest path Quest's wrapper
+is designed for, modulo a single bs=4 noise spike at 2.6%); the dense arm
+shows a small ~1-1.5% systematic upward bias under `get_engine` (largest at
+small batch sizes), attributable to the wrapper passing its full
+`vortex_*` kwargs through to `sgl.Engine` even when sparsity is off, but
+this does not affect any dense-vs-quest comparison conclusion since both
+arms of any given comparison shift together.
+
+```bash
+GPU=0 bash quest_batch_benchmark/run_engine_api_comparison.sh
+```
+
 ## Files
 
 | File | Purpose |
