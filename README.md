@@ -4,23 +4,71 @@ Experimental branch comparing block-granularity (`block_size=4` token)
 KV gather against alternative fetch policies on top of vortex_torch's
 sparse-attention algorithm.
 
-## Setup on a fresh sm_120 / RTX 5060 Ti box (or B200)
+## Setup on a fresh sm_120 / RTX 5060 Ti box
+
+`vortex_v04` is the conda env name **on the original dev machine**. On a
+fresh box you have to create it yourself. Roughly 15–30 min total
+including downloads.
 
 ```bash
-git clone <this repo>
+# 1. miniforge (≈ 2 min)
+curl -L -o /tmp/mf.sh https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh
+bash /tmp/mf.sh -b -p $HOME/miniforge3
+source $HOME/miniforge3/etc/profile.d/conda.sh
+
+# 2. env (≈ 1 min)
+conda create -y -n vortex_v04 python=3.12
+conda activate vortex_v04
+
+# 3. clone (≈ 1 min)
+git clone https://github.com/agentic-browser-project/vortex_torch
 cd vortex_torch
 git checkout bench1
 
-# Install conda env per upstream vortex_torch instructions, then:
-conda activate vortex_v04
+# 4. torch + sglang + flashinfer (≈ 10 min, mostly torch download)
+pip install torch==2.7.1 torchvision==0.22.1 torchaudio==2.7.1 --index-url https://download.pytorch.org/whl/cu128
+pip install flashinfer-python==0.6.8.post1
+pip install PyYAML==6.0.3
+pip install -e third_party/sglang/v0.4.9/sglang/python[all]
+pip install uvloop==0.21.0 uvicorn==0.35.0
+
+# 5. vortex_torch itself + transformers pin (≈ 2 min)
+pip install -e .
+# pyproject pins transformers==4.57.1 — pip will downgrade if you already had a newer one
+
+# 6. sanity check
+python -c "import torch, sglang, vortex_torch; print('ok', torch.__version__, torch.version.cuda)"
+# expect: ok 2.7.1+cu128 12.8
 ```
 
-On B200, also revert the local sm_120 (Blackwell consumer) workarounds:
-- `third_party/sglang/.../layernorm.py`     : `forward_native` → `forward_cuda`
+### sm_120 (Blackwell consumer GPUs) — patches are ALREADY APPLIED
+
+The three sgl-kernel-bypassing patches (`forward_cuda` → `forward_native`)
+are **already in the bench1 branch**. No manual patching needed. The
+JSON configs in this branch also already set `disable_cuda_graph: true`
+and `sampling_backend: pytorch`.
+
+You do NOT need to source-build `sgl-kernel`; the patches sidestep the
+three modules that lack sm_120 prebuilt binaries. If a different
+sgl-kernel module errors out at runtime, apply the same pattern
+(replace `forward_cuda` body with `return self.forward_native(...)`).
+
+### B200 reverts
+
+On B200 (sm_100, has prebuilt sgl-kernel binaries), revert the
+workarounds for full speed:
+- `third_party/sglang/.../layernorm.py`        : restore `forward_cuda` body
 - `third_party/sglang/.../rotary_embedding.py` : same
-- `third_party/sglang/.../activation.py`    : same
-- In the JSON configs: remove `"disable_cuda_graph": true` and `"sampling_backend": "pytorch"`
+- `third_party/sglang/.../activation.py`       : same
+- In the JSON: remove `disable_cuda_graph: true` and `sampling_backend: pytorch`
 - Raise `mem_fraction_static` to ~0.85; switch `model_path` to a 70B-class model
+
+### Python interpreters NOT to use
+
+- `/home/wangxian/venv_magicpig/bin/python` (or any pre-existing venv on
+  the box) — torch and transformers versions are wrong. vortex_torch's
+  `pyproject.toml` pins `transformers==4.57.1`; sglang expects
+  `torch==2.7.1+cu128`. A fresh conda env is the cheapest path.
 
 ## Methods
 
@@ -139,7 +187,8 @@ because adjacent blocks have similar centroids.
 | `submissions/block_size_sweep/batch_0_id{0,1,2,3}.py` | Centroid + GeMM + topK (all 4 are the same algorithm; vary only block_size × topk_val) | The current default. Tends to select page-aligned |
 | `submissions/example_block_sparse_attention.py` | Same centroid algorithm | (Reference / template) |
 | `submissions/gqa_quest_approx.py` | **Quest**: per-block MIN + MAX statistics, `score = max(q·min, q·max)` | Theoretically more discriminative between adjacent blocks → may scatter |
-| `submissions/{claude_opus_4_7, claude_sonnet_4_6, kimi_v0, oai_v0, gpt_5}/` | Other AI agents' submissions (mix of variants) | Worth surveying for diversity |
+| `submissions/{claude_opus_4_7, claude_sonnet_4_6, gpt_5}/` (each has 20 `innovate_0_id{0..19}` variants) | Other AI agents' algorithm submissions | Worth surveying for diversity |
+| `submissions/kimi_v0.py`, `submissions/oai_v0.py` | Centroid-based variants (mean + topK), small renaming | Same family as block_size_sweep, unlikely to scatter |
 
 ## Layout
 
