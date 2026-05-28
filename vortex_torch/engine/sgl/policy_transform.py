@@ -76,6 +76,9 @@ def apply_policy(
     block_size: int,
     num_blocks_per_page: int,
     policy_str: str,
+    n_rows: Optional[int] = None, # Active rows (bs * num_kv_heads). Buffers are
+                                  # pre-allocated for the max batch, so without
+                                  # this we'd treat trailing zeros as valid rows.
 ) -> None:
     """Modify indptr and indices_buf IN PLACE according to policy_str.
 
@@ -93,8 +96,9 @@ def apply_policy(
     blocks_per_p_page = P // block_size
 
     indptr_cpu = indptr.cpu().tolist()
-    n_rows = len(indptr_cpu) - 1
-    total_len = int(indptr_cpu[-1])
+    if n_rows is None:
+        n_rows = len(indptr_cpu) - 1
+    total_len = int(indptr_cpu[n_rows])
     if total_len == 0:
         return
 
@@ -152,6 +156,34 @@ def apply_policy(
         print(f"[VORTEX_POLICY={policy_str}] buffer overflow "
               f"({new_total} > {buf_capacity}), falling back to block_fetch")
         return
+
+    # Coverage / waste / page-hit-histogram accounting (VORTEX_POLICY_STATS=1).
+    #   coverage = |selected ∩ loaded| / |selected|   (information preserved)
+    #   waste    = |loaded - selected| / |loaded|     (over-fetch ratio)
+    # Aggregated across all rows in this layer × step into a global tally
+    # dumped to the path in VORTEX_HBM_TRACE.
+    import os as _os
+    if _os.environ.get("VORTEX_POLICY_STATS"):
+        from vortex_torch.engine.sgl.hbm_trace import record_policy_stats, record_page_hist
+        n_sel = n_loaded = n_kept = 0
+        page_hits_dist = [0] * (blocks_per_p_page + 1)
+        for row_idx in range(n_rows):
+            start, end = int(indptr_cpu[row_idx]), int(indptr_cpu[row_idx + 1])
+            pre = set(indices_cpu[start:end])
+            post = set(new_per_row[row_idx])
+            n_sel += len(pre)
+            n_loaded += len(post)
+            n_kept += len(pre & post)
+            # Per-row page-hit count — clamp to valid bucket in case of dupes
+            kv_head = row_idx % num_kv_heads
+            local_page_hits = defaultdict(int)
+            for b in indices_cpu[start:end]:
+                lb = _logical_block_idx(b, kv_head, num_kv_heads, num_blocks_per_page)
+                local_page_hits[lb // blocks_per_p_page] += 1
+            for cnt in local_page_hits.values():
+                page_hits_dist[min(cnt, blocks_per_p_page)] += 1
+        record_policy_stats(n_sel, n_loaded, n_kept)
+        record_page_hist(page_hits_dist)
 
     # Reconstruct flat indices + cumulative indptr
     new_indices_flat: List[int] = []

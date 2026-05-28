@@ -25,6 +25,13 @@ import torch
 _TOTAL_INDICES = 0
 _TOTAL_CALLS = 0
 _TOTAL_BYTES = 0
+# Policy stats (only filled when VORTEX_POLICY_STATS=1):
+#   _POLICY_SELECTED = total indexer-selected blocks across all rows/calls
+#   _POLICY_LOADED   = total blocks kernel actually loaded (post-policy)
+#   _POLICY_KEPT     = |selected ∩ loaded| (how many indexer-selected survived)
+_POLICY_SELECTED = 0
+_POLICY_LOADED = 0
+_POLICY_KEPT = 0
 _ENABLED: Optional[bool] = None
 _OUT_PATH: Optional[str] = None
 # Flush every N calls to avoid losing trace on SIGKILL of the scheduler subprocess.
@@ -59,9 +66,43 @@ def record(indptr: torch.Tensor, n_rows: int, block_size: int,
         _dump()
 
 
+def record_policy_stats(n_selected: int, n_loaded: int, n_kept: int) -> None:
+    """Accumulate one layer × step worth of policy stats.
+
+    Called from policy_transform.apply_policy() when VORTEX_POLICY_STATS=1.
+    """
+    if not _maybe_init():
+        return
+    global _POLICY_SELECTED, _POLICY_LOADED, _POLICY_KEPT
+    _POLICY_SELECTED += n_selected
+    _POLICY_LOADED += n_loaded
+    _POLICY_KEPT += n_kept
+
+
+_PAGE_HIST: list = []
+
+
+def record_page_hist(per_call_hist: list) -> None:
+    """Accumulate per-page hit-count histogram (length = blocks_per_p_page + 1).
+
+    Each entry tells: how many pages had exactly i hits, summed across all
+    rows in this layer×step.
+    """
+    if not _maybe_init():
+        return
+    global _PAGE_HIST
+    if not _PAGE_HIST:
+        _PAGE_HIST = list(per_call_hist)
+    else:
+        for i, v in enumerate(per_call_hist):
+            _PAGE_HIST[i] += v
+
+
 def _dump() -> None:
     if not _ENABLED or _OUT_PATH is None:
         return
+    coverage = (_POLICY_KEPT / _POLICY_SELECTED) if _POLICY_SELECTED else None
+    waste = ((_POLICY_LOADED - _POLICY_KEPT) / _POLICY_LOADED) if _POLICY_LOADED else None
     payload = {
         "total_indices_summed": _TOTAL_INDICES,
         "total_calls": _TOTAL_CALLS,
@@ -73,6 +114,13 @@ def _dump() -> None:
             _TOTAL_BYTES / _TOTAL_CALLS / 1e6 if _TOTAL_CALLS else 0
         ),
         "total_kv_mb": _TOTAL_BYTES / 1e6,
+        # Policy accounting (None when policy hook not invoked — i.e. method 3)
+        "policy_selected_total": _POLICY_SELECTED if _POLICY_SELECTED else None,
+        "policy_loaded_total": _POLICY_LOADED if _POLICY_LOADED else None,
+        "policy_kept_total": _POLICY_KEPT if _POLICY_LOADED else None,
+        "coverage": coverage,
+        "waste": waste,
+        "page_hit_histogram": _PAGE_HIST if _PAGE_HIST else None,
         "policy": os.environ.get("VORTEX_POLICY", "(unset)"),
         "use_bsr": os.environ.get("VORTEX_USE_BSR", "0"),
         "use_custom": os.environ.get("VORTEX_USE_CUSTOM", "0"),

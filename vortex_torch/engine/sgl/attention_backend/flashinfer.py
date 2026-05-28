@@ -699,8 +699,20 @@ class VortexFlashInferBackend(AttentionBackend):
 
             # PATCH (block_size_sweep): apply Method 1 / Method 2 fetch policy
             # by rewriting sparse_kv_indptr/indices in place before attention.
+            #
+            # IMPORTANT: when a policy hook modifies the indices/indptr per-
+            # layer, FlashInfer's BatchDecodeWithPagedKVCacheWrapper has a
+            # STALE split-K plan made in init_forward_metadata. Calling
+            # plan() again here works in principle but in practice gives
+            # accuracy=0.5 (workspace-sizing / cuda-graph state issue —
+            # see TODO in README). The clean workaround: when a policy
+            # is active, route the attention compute through the custom
+            # Triton kernel (Option A) which has no plan/run separation.
+            # The Triton kernel reads the CURRENT indices buffer, so the
+            # apply_policy modification is honoured exactly.
             _policy = os.environ.get("VORTEX_POLICY")
-            if _policy and _policy != "block_fetch":
+            _policy_active = bool(_policy and _policy != "block_fetch")
+            if _policy_active:
                 from vortex_torch.engine.sgl.policy_transform import apply_policy
                 apply_policy(
                     indptr=self.ctx.metadata.sparse_kv_indptr,
@@ -709,6 +721,7 @@ class VortexFlashInferBackend(AttentionBackend):
                     block_size=self.block_size,
                     num_blocks_per_page=self.num_blocks_per_page,
                     policy_str=_policy,
+                    n_rows=q.shape[0],
                 )
 
             # PATCH (HBM accounting): tally bytes that the kernel will gather.
@@ -722,8 +735,13 @@ class VortexFlashInferBackend(AttentionBackend):
                 bytes_per_elem=2,  # bfloat16
             )
 
-            # Sparse attention compute
-            if os.environ.get("VORTEX_USE_CUSTOM") == "1":
+            # Sparse attention compute. Custom Triton path is forced when a
+            # policy hook ran (see the note above about BatchDecode stale plan).
+            _use_custom = (
+                os.environ.get("VORTEX_USE_CUSTOM") == "1"
+                or _policy_active
+            )
+            if _use_custom:
                 # Option A: custom Triton kernel — gather + flash-attention
                 # fused, no FlashInfer wrapper. Reads the same sparse_kv_indptr
                 # / sparse_kv_indices that the indexer just filled.
