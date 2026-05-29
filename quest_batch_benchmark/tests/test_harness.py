@@ -246,3 +246,18 @@ def test_label_overrides_attention_in_raw_csv(tmp_path):
     assert column_value(None, "quest") == "quest"
     # Empty-string label falls through to attention (documented intent).
     assert column_value("", "dense") == "dense"
+
+
+def test_model_path_flag_accepted_and_roundtrips():
+    """The drivers pass --model-path so a second model (Qwen3-8B) can reuse the
+    harness. Default stays Qwen3-VL; an explicit path round-trips to args."""
+    import benchmark_quest_tpot as bm
+    p = bm.build_parser()
+    default = p.parse_args(["--attention", "dense"])
+    assert default.model_path.endswith("Qwen3-VL-8B-Instruct")
+    explicit = p.parse_args([
+        "--attention", "quest",
+        "--model-path",
+        "/vast/projects/liuv/pennnetworks/hf_models/Qwen/Qwen3-8B",
+    ])
+    assert explicit.model_path.endswith("Qwen3-8B")
