@@ -13,7 +13,7 @@ import json
 from pathlib import Path
 
 from aggregate_results import OUT_FIELDS
-from treesparse_results import treesparse_rows
+from treesparse_results import treesparse_rows, MODEL_TAG
 
 # render order within each batch size
 _METHOD_ORDER = {"dense": 0, "quest": 1, "quest_topk29": 2, "treesparse": 3}
@@ -27,12 +27,13 @@ def load_aggregated(csv_path: str) -> list[dict]:
 
 
 def merge(quest_csv: str, treesparse_json: str, batch_sizes: list[int],
-          top_k: int) -> list[dict]:
+          top_k: int, treesparse_model_tag: str = MODEL_TAG) -> list[dict]:
     """All three methods' rows, sorted by (batch_size, method)."""
     rows = load_aggregated(quest_csv)
     with open(treesparse_json, encoding="utf-8") as f:
         raw = json.load(f)
-    rows = rows + treesparse_rows(raw, batch_sizes, top_k)
+    rows = rows + treesparse_rows(raw, batch_sizes, top_k,
+                                  model_tag=treesparse_model_tag)
     rows.sort(key=lambda r: (int(r["batch_size"]),
                              _METHOD_ORDER.get(r["attention"], 9)))
     return rows
@@ -96,10 +97,14 @@ def main() -> None:
                    type=lambda s: [int(x) for x in s.split(",")],
                    default=[1, 2, 4, 8, 16, 32, 64])
     p.add_argument("--top-k", type=int, default=128)
+    p.add_argument("--treesparse-model-tag", default=MODEL_TAG,
+                   help="Value written to the `model` column for treesparse "
+                        "rows (the model TreeSparse actually ran). Defaults to "
+                        "the headline label.")
     args = p.parse_args()
 
     rows = merge(args.quest_csv, args.treesparse_json, args.batch_sizes,
-                 args.top_k)
+                 args.top_k, treesparse_model_tag=args.treesparse_model_tag)
     Path(args.out_csv).parent.mkdir(parents=True, exist_ok=True)
     Path(args.out_md).parent.mkdir(parents=True, exist_ok=True)
     with open(args.out_csv, "w", newline="", encoding="utf-8") as f:

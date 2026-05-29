@@ -123,3 +123,29 @@ def test_format_table_includes_quest_topk29_column(tmp_path):
     assert "quest (topk=29)" in table
     assert ("| 1 | 10.00 | 20.00 | 8.00 | 5.00 | 0.50x | 1.25x | 2.00x |"
             in table)
+
+
+def test_merge_labels_treesparse_rows_with_model_tag(tmp_path):
+    """The driver can tell merge() which model TreeSparse ran on; that value
+    lands in the `model` column of the merged treesparse rows."""
+    qcsv, tjson = tmp_path / "q.csv", tmp_path / "t.json"
+    _write_quest_csv(qcsv, [
+        _agg_row("dense", 1, 10.0),
+        _agg_row("quest", 1, 11.0),
+    ])
+    tjson.write_text(json.dumps({"1": _ts_entry(5.0)}))
+    rows = merge(str(qcsv), str(tjson), [1], top_k=128,
+                 treesparse_model_tag="Qwen3-8B")
+    ts_row = next(r for r in rows if r["attention"] == "treesparse")
+    assert ts_row["model"] == "Qwen3-8B"
+
+
+def test_merge_treesparse_model_tag_defaults_to_module_constant(tmp_path):
+    """Default behaviour is unchanged: treesparse rows keep the headline label."""
+    from treesparse_results import MODEL_TAG
+    qcsv, tjson = tmp_path / "q.csv", tmp_path / "t.json"
+    _write_quest_csv(qcsv, [_agg_row("dense", 1, 10.0)])
+    tjson.write_text(json.dumps({"1": _ts_entry(5.0)}))
+    rows = merge(str(qcsv), str(tjson), [1], top_k=128)
+    ts_row = next(r for r in rows if r["attention"] == "treesparse")
+    assert ts_row["model"] == MODEL_TAG
