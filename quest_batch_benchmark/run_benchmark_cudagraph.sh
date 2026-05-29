@@ -14,14 +14,17 @@ cd "$BENCH"
 
 GPU="${GPU:-0}"
 PY="$BENCH/.venv/bin/python"
-RAW="$BENCH/results/raw_results_cudagraph.csv"
-OUT="$BENCH/results/tpot_vs_batchsize_cudagraph.csv"
-NOGRAPH_AGG="$BENCH/results/tpot_vs_batchsize.csv"
-CMP_CSV="$BENCH/results/cuda_graph_comparison.csv"
-CMP_MD="$BENCH/results/cuda_graph_comparison.md"
+# Model + output dir parameterized (defaults reproduce the Qwen3-VL run).
+MODEL_PATH="${MODEL_PATH:-/vast/projects/liuv/pennnetworks/hf_models/Qwen/Qwen3-VL-8B-Instruct}"
+RESULTS_DIR="${RESULTS_DIR:-$BENCH/results}"
+RAW="$RESULTS_DIR/raw_results_cudagraph.csv"
+OUT="$RESULTS_DIR/tpot_vs_batchsize_cudagraph.csv"
+NOGRAPH_AGG="$RESULTS_DIR/tpot_vs_batchsize.csv"
+CMP_CSV="$RESULTS_DIR/cuda_graph_comparison.csv"
+CMP_MD="$RESULTS_DIR/cuda_graph_comparison.md"
 TS="$(date +%Y%m%d_%H%M%S)"
 
-mkdir -p results logs
+mkdir -p "$RESULTS_DIR" logs
 rm -f "$RAW"   # fresh raw CSV; harness appends per mode
 
 # Three modes under --enable-cuda-graph: dense, quest topk_val=64, quest
@@ -32,6 +35,7 @@ echo ">>> running dense --enable-cuda-graph  (GPU $GPU)"
 CUDA_VISIBLE_DEVICES="$GPU" "$PY" benchmark_quest_tpot.py \
     --attention dense \
     --enable-cuda-graph \
+    --model-path "$MODEL_PATH" \
     --raw-csv "$RAW" \
     2>&1 | tee "logs/dense_cudagraph_${TS}.log"
 status=${PIPESTATUS[0]}
@@ -45,6 +49,7 @@ CUDA_VISIBLE_DEVICES="$GPU" "$PY" benchmark_quest_tpot.py \
     --attention quest \
     --topk-val 64 \
     --enable-cuda-graph \
+    --model-path "$MODEL_PATH" \
     --raw-csv "$RAW" \
     2>&1 | tee "logs/quest_cudagraph_${TS}.log"
 status=${PIPESTATUS[0]}
@@ -59,6 +64,7 @@ CUDA_VISIBLE_DEVICES="$GPU" "$PY" benchmark_quest_tpot.py \
     --topk-val 29 \
     --label quest_topk29 \
     --enable-cuda-graph \
+    --model-path "$MODEL_PATH" \
     --raw-csv "$RAW" \
     2>&1 | tee "logs/quest_topk29_cudagraph_${TS}.log"
 status=${PIPESTATUS[0]}
