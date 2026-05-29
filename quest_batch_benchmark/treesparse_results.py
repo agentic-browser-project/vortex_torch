@@ -28,7 +28,8 @@ OUT_FIELDS = [
 MODEL_TAG = "Qwen3-VL-8B-Instruct"
 
 
-def treesparse_rows(raw: dict, batch_sizes: list[int], top_k: int) -> list[dict]:
+def treesparse_rows(raw: dict, batch_sizes: list[int], top_k: int,
+                    model_tag: str = MODEL_TAG) -> list[dict]:
     """One OUT_FIELDS row per batch size, sorted ascending.
 
     `raw` is the TreeSparse results JSON (top-level keys are batch-size
@@ -41,7 +42,7 @@ def treesparse_rows(raw: dict, batch_sizes: list[int], top_k: int) -> list[dict]
         base = {
             "attention": "treesparse",
             "batch_size": bs,
-            "model": MODEL_TAG,
+            "model": model_tag,
             "topk_val": top_k,
         }
         if entry is None:
@@ -84,11 +85,17 @@ def main() -> None:
                    default=[1, 2, 4, 8, 16, 32, 64])
     p.add_argument("--top-k", type=int, default=128,
                    help="TreeSparse top-k chunks (run_batch_experiments.sh default).")
+    p.add_argument("--model-tag", default=MODEL_TAG,
+                   help="Value written to the `model` column of the treesparse "
+                        "rows. Defaults to the headline model label; pass the "
+                        "actual benchmarked model (e.g. Qwen3-8B) for a second "
+                        "model run.")
     args = p.parse_args()
 
     with open(args.treesparse_json, encoding="utf-8") as f:
         raw = json.load(f)
-    rows = treesparse_rows(raw, args.batch_sizes, args.top_k)
+    rows = treesparse_rows(raw, args.batch_sizes, args.top_k,
+                           model_tag=args.model_tag)
 
     Path(args.out_csv).parent.mkdir(parents=True, exist_ok=True)
     with open(args.out_csv, "w", newline="", encoding="utf-8") as f:

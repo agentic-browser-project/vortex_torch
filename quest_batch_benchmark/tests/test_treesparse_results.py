@@ -52,3 +52,19 @@ def test_rows_sorted_by_batch_size():
            "2": _entry(12.0, 13.0)}
     rows = treesparse_rows(raw, [8, 1, 2], top_k=128)
     assert [int(r["batch_size"]) for r in rows] == [1, 2, 8]
+
+
+def test_model_tag_overrides_model_column():
+    """A caller can label the treesparse rows with the model that actually ran
+    (e.g. Qwen3-8B for the second-model benchmark) instead of the default."""
+    from treesparse_results import treesparse_rows
+    rows = treesparse_rows({"1": _entry(10.0, 12.0)}, [1], 128,
+                           model_tag="Qwen3-8B")
+    assert rows[0]["model"] == "Qwen3-8B"
+
+
+def test_model_tag_defaults_to_module_constant():
+    """Default behaviour is unchanged: the model column is MODEL_TAG."""
+    from treesparse_results import treesparse_rows, MODEL_TAG
+    rows = treesparse_rows({"1": _entry(10.0, 12.0)}, [1], 128)
+    assert rows[0]["model"] == MODEL_TAG
