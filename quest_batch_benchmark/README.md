@@ -17,6 +17,14 @@ same model as the sgl baseline. The v0.3 branch had to fall back to Qwen3-8B
 because the old sglang fork lacked a `qwen3_vl` model class; that workaround is
 gone in v0.5.
 
+**Second model — Qwen3-8B.** This benchmark is also run on **Qwen3-8B**
+(`/vast/projects/liuv/pennnetworks/hf_models/Qwen/Qwen3-8B`), the v0.3
+branch's text-only model, as a second benchmarked model. Its results live
+under `results/qwen3_8b/` and are reported in their own section
+([Qwen3-8B (second model)](#results--qwen3-8b-second-model)) below. As with
+the headline Qwen3-VL run, **all four methods run on the same model** — here
+Qwen3-8B (TreeSparse is pointed at Qwen3-8B via its `--model-path`).
+
 ## What this measures
 
 **Quest** ([arXiv:2406.10774](https://arxiv.org/abs/2406.10774)) is a
@@ -303,6 +311,22 @@ quest_batch_benchmark/.venv/bin/hf download Qwen/Qwen3-VL-8B-Instruct \
 GPU=0 bash quest_batch_benchmark/run_benchmark.sh
 ```
 
+To run the **Qwen3-8B** model instead (writes into `results/qwen3_8b/`; the
+model is already on disk from the v0.3 work, otherwise
+`hf download Qwen/Qwen3-8B --local-dir .../Qwen/Qwen3-8B`):
+
+```bash
+# no-graph 4-way sweep (dense + quest@64 + quest@29 + TreeSparse) on Qwen3-8B
+GPU=0 bash quest_batch_benchmark/run_benchmark_qwen3_8b.sh
+
+# then the CUDA-graph sweep (dense + quest@64 + quest@29) on Qwen3-8B
+GPU=0 bash quest_batch_benchmark/run_benchmark_cudagraph_qwen3_8b.sh
+```
+
+Both Qwen3-8B drivers are thin wrappers over the headline drivers — they set
+`MODEL_PATH` + `RESULTS_DIR=results/qwen3_8b` (and the TreeSparse model label)
+and reuse every fairness flag unchanged.
+
 `run_benchmark.sh` now runs three stages: `dense`, `quest`, and `treesparse`.
 The `treesparse` stage is driven by `run_treesparse.sh`, which runs TreeSparse
 in its own pre-built environment (see `treesparse_env_notes.md`). A separate
@@ -408,6 +432,9 @@ values).
 | `benchmark_quest_tpot.py` | The Engine harness — one attention mode, all batch sizes. |
 | `aggregate_results.py` | Collapses the raw per-repeat CSV into the processed curve. |
 | `run_benchmark.sh` | Driver: runs dense, quest, and treesparse stages, then builds the three-way comparison. |
+| `run_benchmark_qwen3_8b.sh` | Thin wrapper: runs the full no-graph 4-way sweep on **Qwen3-8B** into `results/qwen3_8b/` (sets `MODEL_PATH`/`RESULTS_DIR` and execs `run_benchmark.sh`). |
+| `run_benchmark_cudagraph_qwen3_8b.sh` | Thin wrapper: runs the CUDA-graph sweep on **Qwen3-8B** into `results/qwen3_8b/`. |
+| `results/qwen3_8b/` | All Qwen3-8B result files (same filenames as `results/` for the headline model). |
 | `run_treesparse.sh` | Orchestrator: drives TreeSparse's own harness on `request.json` and writes `results/treesparse_raw.json`. |
 | `treesparse_results.py` | Converts `treesparse_raw.json` into a comparison row (uses `tpot_median_ms`). |
 | `build_comparison.py` | Merges dense/quest aggregated CSV with TreeSparse row into `results/tpot_three_way.csv` and `results/comparison_table.md`. |
