@@ -11,12 +11,12 @@ set -uo pipefail
 BENCH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TSA="${TSA_DIR:-/vast/projects/liuv/pennnetworks/xutingl/sparse_attn/TreeSparseAttention}"
 REQUEST="$BENCH/request.json"
-DEST="$BENCH/results/treesparse_raw.json"
+DEST="${OUT_JSON:-$BENCH/results/treesparse_raw.json}"
 
 [ -f "$REQUEST" ] || { echo "ERROR: request.json missing at $REQUEST" >&2; exit 1; }
 [ -d "$TSA" ]     || { echo "ERROR: TreeSparseAttention missing at $TSA" >&2; exit 1; }
 
-mkdir -p "$BENCH/results"
+mkdir -p "$(dirname "$DEST")"
 
 # Lmod's `module` function is installed by the system profile, which a
 # non-interactive script does not load -- source it so env.sh can `module load`.
@@ -56,7 +56,16 @@ echo ">>> run_batch_experiments.sh tpot-no-share  (request: $REQUEST)"
 # The script's own exit code is intentionally ignored: its final (optional)
 # plotting step runs AFTER the results JSON is written and may fail without
 # affecting the measurement. Success is verified by locating the JSON below.
-bash run_batch_experiments.sh tpot-no-share --request-file "$REQUEST" || true
+# Build the arg list. --request-file always overrides the hard-coded default.
+# --model-path is appended only when TSA_MODEL is set (argparse keeps the LAST
+# --model-path, overriding run_batch_experiments.sh's hard-coded Qwen3-VL); left
+# unset, TreeSparse uses its own default model.
+TS_ARGS=(tpot-no-share --request-file "$REQUEST")
+if [ -n "${TSA_MODEL:-}" ]; then
+  TS_ARGS+=(--model-path "$TSA_MODEL")
+  echo ">>> TreeSparse model pinned to $TSA_MODEL"
+fi
+bash run_batch_experiments.sh "${TS_ARGS[@]}" || true
 
 LATEST="$(ls -t "$TSA"/batch_results/tpot_no_share/results_*/results_*.json \
           2>/dev/null | head -1)"
