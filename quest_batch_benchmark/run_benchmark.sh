@@ -13,11 +13,24 @@ cd "$BENCH"
 
 GPU="${GPU:-0}"
 PY="$BENCH/.venv/bin/python"
-RAW="$BENCH/results/raw_results.csv"
-OUT="$BENCH/results/tpot_vs_batchsize.csv"
+# Model + output dir are parameterized so a second model (e.g. Qwen3-8B) can
+# reuse this driver via a thin wrapper. Defaults reproduce the headline
+# Qwen3-VL-8B-Instruct run exactly.
+MODEL_PATH="${MODEL_PATH:-/vast/projects/liuv/pennnetworks/hf_models/Qwen/Qwen3-VL-8B-Instruct}"
+RESULTS_DIR="${RESULTS_DIR:-$BENCH/results}"
+# TSA_MODEL: when non-empty, run_treesparse.sh APPENDS it as TreeSparse's
+# --model-path (overriding TreeSparse's own hard-coded Qwen3-VL default).
+# Empty by default, so the headline run keeps TreeSparse on Qwen3-VL, matched
+# to dense/quest. TSA_MODEL_TAG is the cosmetic `model` column label for the
+# merged treesparse rows; its default matches the model TreeSparse runs by
+# default (Qwen3-VL).
+TSA_MODEL="${TSA_MODEL:-}"
+TSA_MODEL_TAG="${TSA_MODEL_TAG:-Qwen3-VL-8B-Instruct}"
+RAW="$RESULTS_DIR/raw_results.csv"
+OUT="$RESULTS_DIR/tpot_vs_batchsize.csv"
 TS="$(date +%Y%m%d_%H%M%S)"
 
-mkdir -p results logs
+mkdir -p "$RESULTS_DIR" logs
 rm -f "$RAW"   # fresh raw CSV; harness appends per mode
 
 # Three modes: dense, quest with topk_val=64 (headline), quest with topk_val=29
@@ -30,6 +43,7 @@ rm -f "$RAW"   # fresh raw CSV; harness appends per mode
 echo ">>> running dense  (GPU $GPU)"
 CUDA_VISIBLE_DEVICES="$GPU" "$PY" benchmark_quest_tpot.py \
   --attention dense \
+  --model-path "$MODEL_PATH" \
   --raw-csv "$RAW" \
   2>&1 | tee "logs/dense_${TS}.log"
 status=${PIPESTATUS[0]}
@@ -42,6 +56,7 @@ echo ">>> running quest (topk_val=64)  (GPU $GPU)"
 CUDA_VISIBLE_DEVICES="$GPU" "$PY" benchmark_quest_tpot.py \
   --attention quest \
   --topk-val 64 \
+  --model-path "$MODEL_PATH" \
   --raw-csv "$RAW" \
   2>&1 | tee "logs/quest_${TS}.log"
 status=${PIPESTATUS[0]}
@@ -55,6 +70,7 @@ CUDA_VISIBLE_DEVICES="$GPU" "$PY" benchmark_quest_tpot.py \
   --attention quest \
   --topk-val 29 \
   --label quest_topk29 \
+  --model-path "$MODEL_PATH" \
   --raw-csv "$RAW" \
   2>&1 | tee "logs/quest_topk29_${TS}.log"
 status=${PIPESTATUS[0]}
@@ -67,7 +83,8 @@ echo ">>> aggregating dense + quest + quest_topk29"
 "$PY" aggregate_results.py --raw-csv "$RAW" --out-csv "$OUT" || exit 1
 
 echo ">>> running treesparse  (TreeSparseAttention's own environment)"
-CUDA_VISIBLE_DEVICES="$GPU" bash "$BENCH/run_treesparse.sh" \
+OUT_JSON="$RESULTS_DIR/treesparse_raw.json" TSA_MODEL="$TSA_MODEL" \
+  CUDA_VISIBLE_DEVICES="$GPU" bash "$BENCH/run_treesparse.sh" \
   2>&1 | tee "logs/treesparse_${TS}.log"
 status=${PIPESTATUS[0]}
 if [ "$status" -ne 0 ]; then
@@ -80,7 +97,10 @@ echo ">>> building the three-way comparison"
 # if $OUT is overridden; both equal build_comparison.py's own defaults.
 "$PY" build_comparison.py \
   --quest-csv "$OUT" \
-  --treesparse-json "$BENCH/results/treesparse_raw.json" \
+  --treesparse-json "$RESULTS_DIR/treesparse_raw.json" \
+  --out-csv "$RESULTS_DIR/tpot_three_way.csv" \
+  --out-md "$RESULTS_DIR/comparison_table.md" \
+  --treesparse-model-tag "$TSA_MODEL_TAG" \
   2>&1 | tee "logs/comparison_${TS}.log"
 status=${PIPESTATUS[0]}
 if [ "$status" -ne 0 ]; then
@@ -89,8 +109,10 @@ if [ "$status" -ne 0 ]; then
 fi
 
 echo ">>> done"
+echo "    model             : $MODEL_PATH"
+echo "    results dir       : $RESULTS_DIR"
 echo "    raw (dense+quest+quest_topk29) : $RAW"
 echo "    aggregated        : $OUT"
-echo "    treesparse raw    : $BENCH/results/treesparse_raw.json"
-echo "    three-way CSV     : $BENCH/results/tpot_three_way.csv"
-echo "    comparison table  : $BENCH/results/comparison_table.md"
+echo "    treesparse raw    : $RESULTS_DIR/treesparse_raw.json"
+echo "    three-way CSV     : $RESULTS_DIR/tpot_three_way.csv"
+echo "    comparison table  : $RESULTS_DIR/comparison_table.md"
