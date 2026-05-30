@@ -27,6 +27,7 @@ RESULTS_DIR="${RESULTS_DIR:-$BENCH/results}"
 TSA_MODEL="${TSA_MODEL:-}"
 TSA_MODEL_TAG="${TSA_MODEL_TAG:-Qwen3-VL-8B-Instruct}"
 VORTEX_ATTENTION_BACKEND="${VORTEX_ATTENTION_BACKEND:-flashinfer}"
+ATTENTION_BACKEND="${ATTENTION_BACKEND:-flashinfer}"
 RAW="$RESULTS_DIR/raw_results.csv"
 OUT="$RESULTS_DIR/tpot_vs_batchsize.csv"
 TS="$(date +%Y%m%d_%H%M%S)"
@@ -46,6 +47,7 @@ CUDA_VISIBLE_DEVICES="$GPU" "$PY" benchmark_quest_tpot.py \
   --attention dense \
   --model-path "$MODEL_PATH" \
   --vortex-attention-backend "$VORTEX_ATTENTION_BACKEND" \
+  --attention-backend "$ATTENTION_BACKEND" \
   --raw-csv "$RAW" \
   2>&1 | tee "logs/dense_${TS}.log"
 status=${PIPESTATUS[0]}
@@ -60,6 +62,7 @@ CUDA_VISIBLE_DEVICES="$GPU" "$PY" benchmark_quest_tpot.py \
   --topk-val 64 \
   --model-path "$MODEL_PATH" \
   --vortex-attention-backend "$VORTEX_ATTENTION_BACKEND" \
+  --attention-backend "$ATTENTION_BACKEND" \
   --raw-csv "$RAW" \
   2>&1 | tee "logs/quest_${TS}.log"
 status=${PIPESTATUS[0]}
@@ -75,6 +78,7 @@ CUDA_VISIBLE_DEVICES="$GPU" "$PY" benchmark_quest_tpot.py \
   --label quest_topk29 \
   --model-path "$MODEL_PATH" \
   --vortex-attention-backend "$VORTEX_ATTENTION_BACKEND" \
+  --attention-backend "$ATTENTION_BACKEND" \
   --raw-csv "$RAW" \
   2>&1 | tee "logs/quest_topk29_${TS}.log"
 status=${PIPESTATUS[0]}

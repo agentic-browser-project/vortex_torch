@@ -18,6 +18,7 @@ PY="$BENCH/.venv/bin/python"
 MODEL_PATH="${MODEL_PATH:-/vast/projects/liuv/pennnetworks/hf_models/Qwen/Qwen3-VL-8B-Instruct}"
 RESULTS_DIR="${RESULTS_DIR:-$BENCH/results}"
 VORTEX_ATTENTION_BACKEND="${VORTEX_ATTENTION_BACKEND:-flashinfer}"
+ATTENTION_BACKEND="${ATTENTION_BACKEND:-flashinfer}"
 RAW="$RESULTS_DIR/raw_results_cudagraph.csv"
 OUT="$RESULTS_DIR/tpot_vs_batchsize_cudagraph.csv"
 NOGRAPH_AGG="$RESULTS_DIR/tpot_vs_batchsize.csv"
@@ -38,6 +39,7 @@ CUDA_VISIBLE_DEVICES="$GPU" "$PY" benchmark_quest_tpot.py \
     --enable-cuda-graph \
     --model-path "$MODEL_PATH" \
     --vortex-attention-backend "$VORTEX_ATTENTION_BACKEND" \
+    --attention-backend "$ATTENTION_BACKEND" \
     --raw-csv "$RAW" \
     2>&1 | tee "logs/dense_cudagraph_${TS}.log"
 status=${PIPESTATUS[0]}
@@ -53,6 +55,7 @@ CUDA_VISIBLE_DEVICES="$GPU" "$PY" benchmark_quest_tpot.py \
     --enable-cuda-graph \
     --model-path "$MODEL_PATH" \
     --vortex-attention-backend "$VORTEX_ATTENTION_BACKEND" \
+    --attention-backend "$ATTENTION_BACKEND" \
     --raw-csv "$RAW" \
     2>&1 | tee "logs/quest_cudagraph_${TS}.log"
 status=${PIPESTATUS[0]}
@@ -69,6 +72,7 @@ CUDA_VISIBLE_DEVICES="$GPU" "$PY" benchmark_quest_tpot.py \
     --enable-cuda-graph \
     --model-path "$MODEL_PATH" \
     --vortex-attention-backend "$VORTEX_ATTENTION_BACKEND" \
+    --attention-backend "$ATTENTION_BACKEND" \
     --raw-csv "$RAW" \
     2>&1 | tee "logs/quest_topk29_cudagraph_${TS}.log"
 status=${PIPESTATUS[0]}
