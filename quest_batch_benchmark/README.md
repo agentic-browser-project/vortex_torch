@@ -290,6 +290,123 @@ per-step Python loop over layers in `decode_step`, and a hardcoded
 All 21 configurations completed with `status=ok`.
 
 
+## Results — Qwen3-8B (second model)
+
+The same benchmark run on **Qwen3-8B** (`/vast/.../Qwen/Qwen3-8B`), same
+`request.json` (9,661-token text prompt), 256 output tokens, `repeat=3`, same
+B200, same `get_engine` wrapper and the same fairness contract as the headline
+Qwen3-VL run. The only difference is the model. This section covers **dense +
+Quest** at two operating points — `topk_val=64` (1024 tokens kept, the headline
+Quest configuration) and `topk_val=29` (~464 tokens kept, the vortex_torch
+`get_engine` default) — in both the no-graph and CUDA-graph categories.
+TreeSparse is **not** part of the Qwen3-8B comparison (see
+[Why TreeSparse is omitted for Qwen3-8B](#why-treesparse-is-omitted-for-qwen3-8b)).
+
+### Coverage
+
+| method | no-graph | CUDA graph |
+|---|:---:|:---:|
+| dense (sgl.Engine + flashinfer) | yes | yes |
+| quest, topk_val=64 (sgl.Engine + vortex sparsity) | yes | yes |
+| quest, topk_val=29 (sgl.Engine + vortex sparsity) | yes | yes |
+| TreeSparseAttention | **no** | **no** |
+
+### CUDA graph off (no-graph)
+
+| batch size | dense TPOT (ms) | quest (topk=64) TPOT (ms) | quest (topk=64) speedup | quest (topk=29) TPOT (ms) | quest (topk=29) speedup |
+|-----------:|----------------:|--------------------------:|------------------------:|--------------------------:|------------------------:|
+|  1 |  8.19 | 10.63 | 0.77x | 10.78 | 0.76x |
+|  2 |  9.23 | 12.65 | 0.73x | 12.96 | 0.71x |
+|  4 | 10.61 | 14.38 | 0.74x | 14.60 | 0.73x |
+|  8 | 12.98 | 17.81 | 0.73x | 17.70 | 0.73x |
+| 16 | 18.83 | 24.62 | 0.76x | 24.50 | 0.77x |
+| 32 | 31.80 | 37.65 | 0.84x | 37.39 | 0.85x |
+| 64 | 62.00 | 63.75 | 0.97x | 63.71 | 0.97x |
+
+All 21 configurations (3 methods × 7 batch sizes) completed `status=ok`. As on
+Qwen3-VL, Quest's fixed per-step block-scoring overhead dominates at small batch
+(dense is fastest there — quest@64 is 0.77× dense at bs=1), and the gap closes
+as the batch grows until quest nearly reaches dense at bs=64 (0.97×, 63.75 ms vs
+62.00 ms). The two Quest operating points are within noise of each other at
+every batch size — at this prompt length the tighter `topk_val=29` budget does
+not yet visibly out-run `topk_val=64`.
+
+### CUDA graph on
+
+Same fairness contract, with `disable_cuda_graph=False`.
+
+| batch size | dense TPOT (ms) | quest (topk=64) TPOT (ms) | quest (topk=64) speedup | quest (topk=29) TPOT (ms) | quest (topk=29) speedup |
+|-----------:|----------------:|--------------------------:|------------------------:|--------------------------:|------------------------:|
+|  1 |  5.52 |  5.74 | 0.96x |  5.67 | 0.97x |
+|  2 |  6.37 |  6.89 | 0.92x |  6.68 | 0.95x |
+|  4 |  8.13 |  8.82 | 0.92x |  8.69 | 0.93x |
+|  8 | 11.54 | 12.54 | 0.92x | 12.42 | 0.93x |
+| 16 | 17.91 | 19.62 | 0.91x | 19.40 | 0.92x |
+| 32 | 31.18 | 33.83 | 0.92x | 33.41 | 0.93x |
+| 64 | 61.21 | 62.81 | 0.97x | 61.87 | 0.99x |
+
+All 21 configurations completed with `status=ok`. CUDA-graph capture compresses
+the per-step overhead, so the dense/quest gap is much tighter than no-graph
+(quest@64 stays within 0.91–0.97× dense across the whole sweep), and quest@29
+reaches 0.99× dense at bs=64.
+
+### CUDA-graph vs no-graph speedup (same method) — Qwen3-8B
+
+Side-by-side per-method speedup from CUDA-graph capture (speedup > 1 means CUDA
+graph is faster; `abs diff = CUDA-graph − no-graph`, so a negative number also
+means CUDA graph is faster). CUDA-graph capture helps Quest more than dense at
+small batch (quest@29 bs=1: 1.90× vs dense 1.48×), because Quest's larger
+per-step Python/scheduling overhead is exactly what graph capture removes.
+
+| attention | batch size | no-graph TPOT (ms) | CUDA-graph TPOT (ms) | abs diff (ms) | speedup (no-graph / CUDA-graph) |
+|---|---:|---:|---:|---:|---:|
+| dense | 1 | 8.186 | 5.519 | -2.667 | 1.483247 |
+| dense | 2 | 9.233 | 6.371 | -2.862 | 1.449203 |
+| dense | 4 | 10.614 | 8.129 | -2.486 | 1.305789 |
+| dense | 8 | 12.977 | 11.537 | -1.440 | 1.124829 |
+| dense | 16 | 18.834 | 17.909 | -0.925 | 1.051627 |
+| dense | 32 | 31.800 | 31.176 | -0.624 | 1.020008 |
+| dense | 64 | 62.001 | 61.206 | -0.795 | 1.012992 |
+| quest | 1 | 10.633 | 5.743 | -4.890 | 1.851577 |
+| quest | 2 | 12.650 | 6.890 | -5.760 | 1.835984 |
+| quest | 4 | 14.378 | 8.824 | -5.554 | 1.629359 |
+| quest | 8 | 17.812 | 12.539 | -5.273 | 1.420558 |
+| quest | 16 | 24.622 | 19.617 | -5.005 | 1.255125 |
+| quest | 32 | 37.653 | 33.826 | -3.827 | 1.113137 |
+| quest | 64 | 63.748 | 62.810 | -0.938 | 1.014933 |
+| quest_topk29 | 1 | 10.783 | 5.674 | -5.108 | 1.900273 |
+| quest_topk29 | 2 | 12.960 | 6.681 | -6.279 | 1.939721 |
+| quest_topk29 | 4 | 14.600 | 8.694 | -5.907 | 1.679415 |
+| quest_topk29 | 8 | 17.704 | 12.421 | -5.283 | 1.425298 |
+| quest_topk29 | 16 | 24.502 | 19.402 | -5.100 | 1.262853 |
+| quest_topk29 | 32 | 37.387 | 33.415 | -3.972 | 1.118881 |
+| quest_topk29 | 64 | 63.706 | 61.869 | -1.838 | 1.029703 |
+
+Display values for the result tables above are 2-decimal-place rounded; the
+appendix `abs diff` / `speedup` columns were computed from the underlying
+full-precision aggregates.
+
+### Why TreeSparse is omitted for Qwen3-8B
+
+The headline Qwen3-VL comparison includes TreeSparseAttention, but the Qwen3-8B
+comparison does **not**. TreeSparse's harness (`benchmark_batch.py`) loads every
+model through a `Qwen3VLInference` class that tries `Qwen3VLForConditionalGeneration`
+first. That loader does not *error* on a text-only Qwen3-8B checkpoint — it
+silently builds the **Qwen3-VL** architecture and treats the real checkpoint as
+incompatible: every Qwen3-8B weight loads as "unexpected" (discarded) and every
+Qwen3-VL weight is "missing" and **newly (randomly) initialized**. The resulting
+in-memory model is a *random-weight Qwen3-VL text tower* (32 layers, 32 KV heads,
+rope_theta 5e5), not the real Qwen3-8B (36 layers, 8 KV heads / GQA, rope_theta
+1e6). Any TPOT it produced would be timing the wrong architecture with random
+weights, so it is not a meaningful comparison point and is excluded. (The
+headline Qwen3-VL run is unaffected: there the real Qwen3-VL checkpoint matches
+the class the loader picks.) Making TreeSparse benchmark a real text-only
+Qwen3-8B would require a loader change in the TreeSparse project itself (branch
+on `config.model_type` to load `Qwen3ForCausalLM`), which is out of scope here.
+The `run_benchmark_qwen3_8b.sh` wrapper therefore sets `RUN_TREESPARSE=0`,
+skipping the TreeSparse stage and the four-way merge.
+
+
 ## Reproduce
 
 **Prerequisites:**
