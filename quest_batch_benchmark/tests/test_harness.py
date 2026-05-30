@@ -14,7 +14,8 @@ def _args(attention, **over):
     d = dict(attention=attention, model_path="/models/Qwen3-8B", max_tokens=256,
              repeat=3, topk_val=64, enable_cuda_graph=False,
              mem_fraction_static=None, max_seq_lens=16384,
-             vortex_cache_dir="/tmp/vcache", engine_api="get_engine")
+             vortex_cache_dir="/tmp/vcache", engine_api="get_engine",
+             vortex_attention_backend="flashinfer")
     d.update(over)
     return SimpleNamespace(**d)
 
@@ -261,3 +262,32 @@ def test_model_path_flag_accepted_and_roundtrips():
         "/vast/projects/liuv/pennnetworks/hf_models/Qwen/Qwen3-8B",
     ])
     assert explicit.model_path.endswith("Qwen3-8B")
+
+
+def test_vortex_attention_backend_defaults_to_flashinfer():
+    import benchmark_quest_tpot as bm
+    a = bm.build_parser().parse_args(["--attention", "quest"])
+    assert a.vortex_attention_backend == "flashinfer"
+
+
+def test_vortex_attention_backend_roundtrips_trtllm():
+    import benchmark_quest_tpot as bm
+    a = bm.build_parser().parse_args([
+        "--attention", "quest", "--vortex-attention-backend", "trtllm"])
+    assert a.vortex_attention_backend == "trtllm"
+
+
+def test_vortex_attention_backend_in_build_engine_kwargs():
+    kf = build_engine_kwargs(_args("quest"), n_input_tokens=9661)
+    assert kf["vortex_attention_backend"] == "flashinfer"
+    kt = build_engine_kwargs(
+        _args("quest", vortex_attention_backend="trtllm"), n_input_tokens=9661)
+    assert kt["vortex_attention_backend"] == "trtllm"
+
+
+def test_vortex_attention_backend_in_build_get_engine_kwargs():
+    kf = build_get_engine_kwargs(_args("quest"), n_input_tokens=9661)
+    assert kf["vortex_attention_backend"] == "flashinfer"
+    kt = build_get_engine_kwargs(
+        _args("quest", vortex_attention_backend="trtllm"), n_input_tokens=9661)
+    assert kt["vortex_attention_backend"] == "trtllm"

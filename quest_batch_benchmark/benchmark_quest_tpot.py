@@ -128,7 +128,7 @@ def build_engine_kwargs(args, n_input_tokens: int) -> dict:
         kwargs.update({
             "enable_vortex_sparsity": True,
             "vortex_module_name": QUEST_MODULE,
-            "vortex_attention_backend": "flashinfer",
+            "vortex_attention_backend": args.vortex_attention_backend,
             "vortex_topk_val": args.topk_val,
             "vortex_topk_ratio": 0.0,            # pure static block budget
             "vortex_block_size": 16,
@@ -194,7 +194,7 @@ def build_get_engine_kwargs(args, n_input_tokens: int) -> dict:
         show_time_cost=True,
         log_level="debug",
         trust_remote_code=True,
-        vortex_attention_backend="flashinfer",
+        vortex_attention_backend=args.vortex_attention_backend,
         vortex_compilation_cache_dir=args.vortex_cache_dir,
         # Explicit: get_engine's hardcoded default is True, but we restate it
         # so the override-every-fairness-flag contract is visible in one place.
@@ -487,6 +487,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-seq-lens", type=int, default=16384,
                    help="Lower bound for vortex buffer sizing (quest only).")
     p.add_argument("--vortex-cache-dir", default=str(here / ".vortex_cache"))
+    p.add_argument("--vortex-attention-backend", default="flashinfer",
+                   choices=["flashinfer", "trtllm"],
+                   help="Vortex sparse-attention backend (consulted only when "
+                        "--attention quest, i.e. enable_vortex_sparsity=True). "
+                        "Default 'flashinfer' keeps existing runs byte-identical; "
+                        "'trtllm' selects the trtllm vortex backend. "
+                        "attention_backend (the sglang dense backend) stays "
+                        "flashinfer either way -- the proven pairing in "
+                        "examples/verify_algo.py.")
     return p
 
 
