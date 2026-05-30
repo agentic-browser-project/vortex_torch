@@ -82,30 +82,40 @@ fi
 echo ">>> aggregating dense + quest + quest_topk29"
 "$PY" aggregate_results.py --raw-csv "$RAW" --out-csv "$OUT" || exit 1
 
-echo ">>> running treesparse  (TreeSparseAttention's own environment)"
-OUT_JSON="$RESULTS_DIR/treesparse_raw.json" TSA_MODEL="$TSA_MODEL" \
-  CUDA_VISIBLE_DEVICES="$GPU" bash "$BENCH/run_treesparse.sh" \
-  2>&1 | tee "logs/treesparse_${TS}.log"
-status=${PIPESTATUS[0]}
-if [ "$status" -ne 0 ]; then
-  echo "!!! treesparse run failed (exit $status) -- see logs/treesparse_${TS}.log" >&2
-  exit "$status"
-fi
+# RUN_TREESPARSE gates the TreeSparse stage + the four-way merge. Default 1
+# (the headline Qwen3-VL run is unchanged). Set 0 to skip both -- used by the
+# Qwen3-8B wrapper, because TreeSparse's harness hardcodes the Qwen3-VL model
+# class and silently loads a wrong-architecture random-weight model for a
+# text-only Qwen3 checkpoint (see README "Why TreeSparse is omitted for
+# Qwen3-8B"). When skipped, the aggregated dense+quest CSV ($OUT) is the result.
+if [ "${RUN_TREESPARSE:-1}" = "1" ]; then
+  echo ">>> running treesparse  (TreeSparseAttention's own environment)"
+  OUT_JSON="$RESULTS_DIR/treesparse_raw.json" TSA_MODEL="$TSA_MODEL" \
+    CUDA_VISIBLE_DEVICES="$GPU" bash "$BENCH/run_treesparse.sh" \
+    2>&1 | tee "logs/treesparse_${TS}.log"
+  status=${PIPESTATUS[0]}
+  if [ "$status" -ne 0 ]; then
+    echo "!!! treesparse run failed (exit $status) -- see logs/treesparse_${TS}.log" >&2
+    exit "$status"
+  fi
 
-echo ">>> building the three-way comparison"
-# --quest-csv / --treesparse-json are passed explicitly so the call still works
-# if $OUT is overridden; both equal build_comparison.py's own defaults.
-"$PY" build_comparison.py \
-  --quest-csv "$OUT" \
-  --treesparse-json "$RESULTS_DIR/treesparse_raw.json" \
-  --out-csv "$RESULTS_DIR/tpot_three_way.csv" \
-  --out-md "$RESULTS_DIR/comparison_table.md" \
-  --treesparse-model-tag "$TSA_MODEL_TAG" \
-  2>&1 | tee "logs/comparison_${TS}.log"
-status=${PIPESTATUS[0]}
-if [ "$status" -ne 0 ]; then
-  echo "!!! comparison build failed (exit $status) -- see logs/comparison_${TS}.log" >&2
-  exit "$status"
+  echo ">>> building the three-way comparison"
+  # --quest-csv / --treesparse-json are passed explicitly so the call still works
+  # if $OUT is overridden; both equal build_comparison.py's own defaults.
+  "$PY" build_comparison.py \
+    --quest-csv "$OUT" \
+    --treesparse-json "$RESULTS_DIR/treesparse_raw.json" \
+    --out-csv "$RESULTS_DIR/tpot_three_way.csv" \
+    --out-md "$RESULTS_DIR/comparison_table.md" \
+    --treesparse-model-tag "$TSA_MODEL_TAG" \
+    2>&1 | tee "logs/comparison_${TS}.log"
+  status=${PIPESTATUS[0]}
+  if [ "$status" -ne 0 ]; then
+    echo "!!! comparison build failed (exit $status) -- see logs/comparison_${TS}.log" >&2
+    exit "$status"
+  fi
+else
+  echo ">>> skipping treesparse + four-way merge (RUN_TREESPARSE=0)"
 fi
 
 echo ">>> done"
@@ -113,6 +123,8 @@ echo "    model             : $MODEL_PATH"
 echo "    results dir       : $RESULTS_DIR"
 echo "    raw (dense+quest+quest_topk29) : $RAW"
 echo "    aggregated        : $OUT"
-echo "    treesparse raw    : $RESULTS_DIR/treesparse_raw.json"
-echo "    three-way CSV     : $RESULTS_DIR/tpot_three_way.csv"
-echo "    comparison table  : $RESULTS_DIR/comparison_table.md"
+if [ "${RUN_TREESPARSE:-1}" = "1" ]; then
+  echo "    treesparse raw    : $RESULTS_DIR/treesparse_raw.json"
+  echo "    three-way CSV     : $RESULTS_DIR/tpot_three_way.csv"
+  echo "    comparison table  : $RESULTS_DIR/comparison_table.md"
+fi
