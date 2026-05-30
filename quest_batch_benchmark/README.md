@@ -407,6 +407,113 @@ The `run_benchmark_qwen3_8b.sh` wrapper therefore sets `RUN_TREESPARSE=0`,
 skipping the TreeSparse stage and the four-way merge.
 
 
+## Results — Qwen3-8B, trtllm attention backend
+
+The same Qwen3-8B benchmark re-run with the **trtllm** vortex attention backend
+(`vortex_attention_backend="trtllm"`) instead of flashinfer. Same `request.json`
+(9,661-token text prompt), 256 output tokens, `repeat=3`, same B200, same
+`get_engine` wrapper, same fairness contract as the
+[flashinfer Qwen3-8B run](#results--qwen3-8b-second-model). The sglang dense
+backend stays `attention_backend="flashinfer"` (the proven flashinfer-dense +
+trtllm-vortex pairing from `examples/verify_algo.py`). Results live under
+`results/qwen3_8b_trtllm/`.
+
+**Dense is backend-independent.** Dense decode sets `enable_vortex_sparsity=False`,
+so `vortex_attention_backend` is never consulted — dense always runs through
+sglang's flashinfer `attention_backend`. The dense column here is therefore
+numerically the same path as the flashinfer dense column (run as the comparison
+baseline so this results dir is a self-contained single physical run); **only the
+two Quest operating points actually exercise the trtllm backend.** TreeSparse is
+omitted for the same reason as the flashinfer Qwen3-8B run.
+
+### Coverage
+
+| method | no-graph | CUDA graph |
+|---|:---:|:---:|
+| dense (sgl.Engine + flashinfer, backend-independent) | yes | yes |
+| quest, topk_val=64 (sgl.Engine + vortex **trtllm**) | yes | yes |
+| quest, topk_val=29 (sgl.Engine + vortex **trtllm**) | yes | yes |
+| TreeSparseAttention | **no** | **no** |
+
+### CUDA graph off (no-graph)
+
+| batch size | dense TPOT (ms) | quest (topk=64) TPOT (ms) | quest (topk=64) speedup | quest (topk=29) TPOT (ms) | quest (topk=29) speedup |
+|-----------:|----------------:|--------------------------:|------------------------:|--------------------------:|------------------------:|
+|  1 |  8.26 | 10.64 | 0.78x | 10.55 | 0.78x |
+|  2 |  9.27 | 12.83 | 0.72x | 12.65 | 0.73x |
+|  4 | 10.49 | 14.33 | 0.73x | 14.41 | 0.73x |
+|  8 | 13.11 | 17.61 | 0.74x | 17.46 | 0.75x |
+| 16 | 18.79 | 24.39 | 0.77x | 24.15 | 0.78x |
+| 32 | 31.73 | 36.87 | 0.86x | 36.76 | 0.86x |
+| 64 | 61.90 | 62.37 | 0.99x | 62.09 | 1.00x |
+
+All 21 configurations (3 methods × 7 batch sizes) completed `status=ok`. The
+no-graph shape matches the flashinfer run closely: Quest's per-step block-scoring
+overhead dominates at small batch (quest@64 is 0.78× dense at bs=1) and the gap
+closes with batch size until Quest reaches dense at bs=64 (quest@29 hits 1.00×).
+trtllm and flashinfer no-graph Quest are within noise of each other (quest@29
+bs=64: 62.09 ms trtllm vs 63.71 ms flashinfer) — at this prompt length the vortex
+backend choice barely moves the un-captured decode step.
+
+### CUDA graph on
+
+Same fairness contract, with `disable_cuda_graph=False`.
+
+| batch size | dense TPOT (ms) | quest (topk=64) TPOT (ms) | quest (topk=64) speedup | quest (topk=29) TPOT (ms) | quest (topk=29) speedup |
+|-----------:|----------------:|--------------------------:|------------------------:|--------------------------:|------------------------:|
+|  1 |  5.59 |  5.39 | 1.04x |  5.39 | 1.04x |
+|  2 |  6.41 |  6.38 | 1.01x |  6.35 | 1.01x |
+|  4 |  8.13 |  8.22 | 0.99x |  8.17 | 0.99x |
+|  8 | 11.54 | 11.80 | 0.98x | 11.68 | 0.99x |
+| 16 | 17.97 | 18.57 | 0.97x | 18.34 | 0.98x |
+| 32 | 31.31 | 32.39 | 0.97x | 32.02 | 0.98x |
+| 64 | 61.22 | 60.17 | 1.02x | 59.36 | 1.03x |
+
+All 21 configurations completed with `status=ok`. **This is where the trtllm
+backend pulls ahead:** under CUDA graph, trtllm Quest is *faster than dense* at
+the extremes — quest@64 is 1.04× dense at bs=1 and 1.02× at bs=64, and quest@29
+reaches 1.03× at bs=64 — whereas flashinfer Quest under CUDA graph stayed at or
+below dense everywhere (≤0.99×). trtllm Quest is also faster than flashinfer Quest
+under CUDA graph at large batch (quest@64 bs=64: 60.17 ms trtllm vs 62.81 ms
+flashinfer; quest@29 bs=64: 59.36 ms vs 61.87 ms). Captured into a CUDA graph, the
+trtllm sparse-decode kernel's lower KV-read cost finally shows up as a net win.
+
+### CUDA-graph vs no-graph speedup (same method) — Qwen3-8B (trtllm)
+
+Side-by-side per-method speedup from CUDA-graph capture (speedup > 1 means CUDA
+graph is faster; `abs diff = CUDA-graph − no-graph`, so a negative number also
+means CUDA graph is faster). As with flashinfer, capture helps Quest more than
+dense at small batch (quest@64 bs=2: 2.01× vs dense 1.45×) — Quest's larger
+per-step overhead is exactly what graph capture removes.
+
+| attention | batch size | no-graph TPOT (ms) | CUDA-graph TPOT (ms) | abs diff (ms) | speedup (no-graph / CUDA-graph) |
+|---|---:|---:|---:|---:|---:|
+| dense | 1 | 8.262 | 5.595 | -2.668 | 1.476874 |
+| dense | 2 | 9.266 | 6.411 | -2.855 | 1.445314 |
+| dense | 4 | 10.493 | 8.133 | -2.360 | 1.290208 |
+| dense | 8 | 13.105 | 11.537 | -1.569 | 1.135962 |
+| dense | 16 | 18.790 | 17.969 | -0.821 | 1.045710 |
+| dense | 32 | 31.726 | 31.309 | -0.417 | 1.013322 |
+| dense | 64 | 61.898 | 61.218 | -0.680 | 1.011106 |
+| quest | 1 | 10.645 | 5.391 | -5.254 | 1.974643 |
+| quest | 2 | 12.832 | 6.376 | -6.456 | 2.012666 |
+| quest | 4 | 14.332 | 8.219 | -6.113 | 1.743793 |
+| quest | 8 | 17.615 | 11.798 | -5.816 | 1.492979 |
+| quest | 16 | 24.389 | 18.566 | -5.823 | 1.313647 |
+| quest | 32 | 36.869 | 32.391 | -4.478 | 1.138241 |
+| quest | 64 | 62.366 | 60.172 | -2.194 | 1.036461 |
+| quest_topk29 | 1 | 10.548 | 5.387 | -5.162 | 1.958201 |
+| quest_topk29 | 2 | 12.649 | 6.348 | -6.300 | 1.992393 |
+| quest_topk29 | 4 | 14.408 | 8.175 | -6.233 | 1.762452 |
+| quest_topk29 | 8 | 17.457 | 11.682 | -5.775 | 1.494369 |
+| quest_topk29 | 16 | 24.152 | 18.336 | -5.816 | 1.317172 |
+| quest_topk29 | 32 | 36.756 | 32.017 | -4.739 | 1.148025 |
+| quest_topk29 | 64 | 62.089 | 59.357 | -2.732 | 1.046026 |
+
+Result-table values above are 2-decimal-place rounded; the appendix `abs diff` /
+`speedup` columns were computed from the underlying full-precision aggregates.
+
+
 ## Reproduce
 
 **Prerequisites:**
@@ -448,6 +555,22 @@ Both Qwen3-8B drivers are thin wrappers over the headline drivers — they set
 unchanged. The no-graph wrapper also sets `RUN_TREESPARSE=0`, skipping the
 TreeSparse stage (see
 [Why TreeSparse is omitted for Qwen3-8B](#why-treesparse-is-omitted-for-qwen3-8b)).
+
+To run Qwen3-8B with the **trtllm** vortex backend instead (writes into
+`results/qwen3_8b_trtllm/`; dense is backend-independent and identical to the
+flashinfer run, only the two Quest points differ):
+
+```bash
+# no-graph sweep (dense + quest@64 + quest@29) on Qwen3-8B, trtllm vortex backend
+GPU=0 bash quest_batch_benchmark/run_benchmark_qwen3_8b_trtllm.sh
+
+# then the CUDA-graph sweep on Qwen3-8B, trtllm vortex backend
+GPU=0 bash quest_batch_benchmark/run_benchmark_cudagraph_qwen3_8b_trtllm.sh
+```
+
+These wrappers set `VORTEX_ATTENTION_BACKEND=trtllm` + `RESULTS_DIR=results/qwen3_8b_trtllm`;
+the generic drivers default `VORTEX_ATTENTION_BACKEND=flashinfer`, so every other
+run is unaffected.
 
 `run_benchmark.sh` now runs three stages: `dense`, `quest`, and `treesparse`.
 The `treesparse` stage is driven by `run_treesparse.sh`, which runs TreeSparse
@@ -556,7 +679,10 @@ values).
 | `run_benchmark.sh` | Driver: runs dense, quest, and treesparse stages, then builds the three-way comparison. |
 | `run_benchmark_qwen3_8b.sh` | Thin wrapper: runs the no-graph dense+quest sweep on **Qwen3-8B** into `results/qwen3_8b/` (sets `MODEL_PATH`/`RESULTS_DIR`/`RUN_TREESPARSE=0` and execs `run_benchmark.sh`; TreeSparse is skipped — see the Qwen3-8B section). |
 | `run_benchmark_cudagraph_qwen3_8b.sh` | Thin wrapper: runs the CUDA-graph sweep on **Qwen3-8B** into `results/qwen3_8b/`. |
-| `results/qwen3_8b/` | All Qwen3-8B result files (same filenames as `results/` for the headline model). |
+| `run_benchmark_qwen3_8b_trtllm.sh` | Thin wrapper: no-graph dense+quest sweep on **Qwen3-8B** with the **trtllm** vortex backend into `results/qwen3_8b_trtllm/` (sets `VORTEX_ATTENTION_BACKEND=trtllm`). |
+| `run_benchmark_cudagraph_qwen3_8b_trtllm.sh` | Thin wrapper: CUDA-graph sweep on **Qwen3-8B** with the **trtllm** vortex backend into `results/qwen3_8b_trtllm/`. |
+| `results/qwen3_8b/` | All Qwen3-8B result files (flashinfer vortex backend; same filenames as `results/` for the headline model). |
+| `results/qwen3_8b_trtllm/` | All Qwen3-8B result files for the **trtllm** vortex backend (dense + quest only; same filenames). |
 | `run_treesparse.sh` | Orchestrator: drives TreeSparse's own harness on `request.json` and writes `results/treesparse_raw.json`. |
 | `treesparse_results.py` | Converts `treesparse_raw.json` into a comparison row (uses `tpot_median_ms`). |
 | `build_comparison.py` | Merges dense/quest aggregated CSV with TreeSparse row into `results/tpot_three_way.csv` and `results/comparison_table.md`. |
