@@ -409,28 +409,50 @@ skipping the TreeSparse stage and the four-way merge.
 
 ## Results — Qwen3-8B, trtllm attention backend
 
-The same Qwen3-8B benchmark re-run with the **trtllm** vortex attention backend
-(`vortex_attention_backend="trtllm"`) instead of flashinfer. Same `request.json`
-(9,661-token text prompt), 256 output tokens, `repeat=3`, same B200, same
-`get_engine` wrapper, same fairness contract as the
-[flashinfer Qwen3-8B run](#results--qwen3-8b-second-model). The sglang dense
-backend stays `attention_backend="flashinfer"` (the proven flashinfer-dense +
-trtllm-vortex pairing from `examples/verify_algo.py`). Results live under
+The same Qwen3-8B benchmark with **both arms moved onto TensorRT-LLM-family
+kernels**, so the dense-vs-Quest comparison is not confounded by a
+flashinfer-vs-trtllm kernel difference. Same `request.json` (9,661-token text
+prompt), 256 output tokens, `repeat=3`, same B200, same `get_engine` wrapper,
+same fairness contract as the
+[flashinfer Qwen3-8B run](#results--qwen3-8b-second-model). Results live under
 `results/qwen3_8b_trtllm/`.
 
-**Dense is backend-independent.** Dense decode sets `enable_vortex_sparsity=False`,
-so `vortex_attention_backend` is never consulted — dense always runs through
-sglang's flashinfer `attention_backend`. The dense column here is therefore
-numerically the same path as the flashinfer dense column (run as the comparison
-baseline so this results dir is a self-contained single physical run); **only the
-two Quest operating points actually exercise the trtllm backend.** TreeSparse is
-omitted for the same reason as the flashinfer Qwen3-8B run.
+**Two backends, one per arm — they are *different* TRT-LLM kernels.** There is no
+single "trtllm attention" both arms can share:
+
+- **Quest (sparse)** uses `vortex_attention_backend="trtllm"` — vortex's own
+  TensorRT-LLM-based sparse-decode kernel (block selection + paged decode).
+- **Dense** uses `attention_backend="trtllm_mha"` — sglang's native TensorRT-LLM
+  MHA dense kernel. Dense decode sets `enable_vortex_sparsity=False`, so it never
+  goes through the vortex sparse path; `trtllm_mha` is the closest TRT-LLM-family
+  *dense* kernel. (A truly-identical "dense = Quest kernel with all blocks
+  selected" baseline is not achievable: there is no `full_attention` vortex flow,
+  and Quest's block budget is capped below the prompt's block count.)
+
+So this section removes the *backend* confound (both arms are TRT-LLM-family) but
+the two arms still run different kernels — read it as "Quest's sparse TRT-LLM
+decode vs. a dense TRT-LLM decode," not "same kernel ± sparsity." Quest keeps
+`attention_backend="flashinfer"` internally because the vortex sparse path is
+*registered under* sglang's flashinfer backend; only the `vortex_attention_backend`
+knob selects its trtllm kernel. TreeSparse is omitted for the same reason as the
+flashinfer Qwen3-8B run.
+
+**Why this matters — the fair baseline changes the conclusion.** In the
+[flashinfer section](#results--qwen3-8b-second-model) dense used flashinfer, and
+under CUDA graph trtllm-Quest *appeared* to edge past dense (≥1.0×). That was
+largely an artifact of a **slower flashinfer dense baseline**: `trtllm_mha` dense
+is much faster at large batch (bs=64: **53.3 ms** vs flashinfer's 62.0 ms
+no-graph; **52.6 ms** vs 61.2 ms under CUDA graph). Against this faster, fairer
+dense baseline, **Quest stays below dense at every batch size** (0.71–0.86×
+no-graph, 0.87–0.98× under CUDA graph) — it never wins on raw TPOT for this
+9,661-token prompt. Quest's value here is KV-read/memory reduction, not decode
+latency at these batch sizes.
 
 ### Coverage
 
 | method | no-graph | CUDA graph |
 |---|:---:|:---:|
-| dense (sgl.Engine + flashinfer, backend-independent) | yes | yes |
+| dense (sgl.Engine + sglang **trtllm_mha**) | yes | yes |
 | quest, topk_val=64 (sgl.Engine + vortex **trtllm**) | yes | yes |
 | quest, topk_val=29 (sgl.Engine + vortex **trtllm**) | yes | yes |
 | TreeSparseAttention | **no** | **no** |
@@ -439,21 +461,19 @@ omitted for the same reason as the flashinfer Qwen3-8B run.
 
 | batch size | dense TPOT (ms) | quest (topk=64) TPOT (ms) | quest (topk=64) speedup | quest (topk=29) TPOT (ms) | quest (topk=29) speedup |
 |-----------:|----------------:|--------------------------:|------------------------:|--------------------------:|------------------------:|
-|  1 |  8.26 | 10.64 | 0.78x | 10.55 | 0.78x |
-|  2 |  9.27 | 12.83 | 0.72x | 12.65 | 0.73x |
-|  4 | 10.49 | 14.33 | 0.73x | 14.41 | 0.73x |
-|  8 | 13.11 | 17.61 | 0.74x | 17.46 | 0.75x |
-| 16 | 18.79 | 24.39 | 0.77x | 24.15 | 0.78x |
-| 32 | 31.73 | 36.87 | 0.86x | 36.76 | 0.86x |
-| 64 | 61.90 | 62.37 | 0.99x | 62.09 | 1.00x |
+|  1 |  8.27 | 10.64 | 0.78x | 10.55 | 0.78x |
+|  2 |  9.39 | 12.83 | 0.73x | 12.65 | 0.74x |
+|  4 | 10.39 | 14.33 | 0.73x | 14.41 | 0.72x |
+|  8 | 12.95 | 17.61 | 0.74x | 17.46 | 0.74x |
+| 16 | 17.43 | 24.39 | 0.71x | 24.15 | 0.72x |
+| 32 | 29.19 | 36.87 | 0.79x | 36.76 | 0.79x |
+| 64 | 53.32 | 62.37 | 0.85x | 62.09 | 0.86x |
 
-All 21 configurations (3 methods × 7 batch sizes) completed `status=ok`. The
-no-graph shape matches the flashinfer run closely: Quest's per-step block-scoring
-overhead dominates at small batch (quest@64 is 0.78× dense at bs=1) and the gap
-closes with batch size until Quest reaches dense at bs=64 (quest@29 hits 1.00×).
-trtllm and flashinfer no-graph Quest are within noise of each other (quest@29
-bs=64: 62.09 ms trtllm vs 63.71 ms flashinfer) — at this prompt length the vortex
-backend choice barely moves the un-captured decode step.
+All 21 configurations (3 methods × 7 batch sizes) completed `status=ok`. Quest's
+per-step block-scoring overhead keeps it below the `trtllm_mha` dense baseline
+throughout — closest at bs=64 (0.85–0.86× dense) but never reaching parity,
+because the faster dense kernel raises the bar relative to the flashinfer-dense
+section.
 
 ### CUDA graph on
 
@@ -461,40 +481,39 @@ Same fairness contract, with `disable_cuda_graph=False`.
 
 | batch size | dense TPOT (ms) | quest (topk=64) TPOT (ms) | quest (topk=64) speedup | quest (topk=29) TPOT (ms) | quest (topk=29) speedup |
 |-----------:|----------------:|--------------------------:|------------------------:|--------------------------:|------------------------:|
-|  1 |  5.59 |  5.39 | 1.04x |  5.39 | 1.04x |
-|  2 |  6.41 |  6.38 | 1.01x |  6.35 | 1.01x |
-|  4 |  8.13 |  8.22 | 0.99x |  8.17 | 0.99x |
-|  8 | 11.54 | 11.80 | 0.98x | 11.68 | 0.99x |
-| 16 | 17.97 | 18.57 | 0.97x | 18.34 | 0.98x |
-| 32 | 31.31 | 32.39 | 0.97x | 32.02 | 0.98x |
-| 64 | 61.22 | 60.17 | 1.02x | 59.36 | 1.03x |
+|  1 |  5.26 |  5.39 | 0.98x |  5.39 | 0.98x |
+|  2 |  6.04 |  6.38 | 0.95x |  6.35 | 0.95x |
+|  4 |  7.65 |  8.22 | 0.93x |  8.17 | 0.94x |
+|  8 | 10.67 | 11.80 | 0.90x | 11.68 | 0.91x |
+| 16 | 16.40 | 18.57 | 0.88x | 18.34 | 0.89x |
+| 32 | 28.44 | 32.39 | 0.88x | 32.02 | 0.89x |
+| 64 | 52.62 | 60.17 | 0.87x | 59.36 | 0.89x |
 
-All 21 configurations completed with `status=ok`. **This is where the trtllm
-backend pulls ahead:** under CUDA graph, trtllm Quest is *faster than dense* at
-the extremes — quest@64 is 1.04× dense at bs=1 and 1.02× at bs=64, and quest@29
-reaches 1.03× at bs=64 — whereas flashinfer Quest under CUDA graph stayed at or
-below dense everywhere (≤0.99×). trtllm Quest is also faster than flashinfer Quest
-under CUDA graph at large batch (quest@64 bs=64: 60.17 ms trtllm vs 62.81 ms
-flashinfer; quest@29 bs=64: 59.36 ms vs 61.87 ms). Captured into a CUDA graph, the
-trtllm sparse-decode kernel's lower KV-read cost finally shows up as a net win.
+All 21 configurations completed with `status=ok`. CUDA-graph capture tightens the
+gap (Quest reaches 0.98× dense at bs=1) but, with both arms on TRT-LLM kernels,
+**Quest no longer overtakes dense** — contrast the flashinfer section, where
+trtllm-Quest hit ≥1.0× only because it was racing the slower flashinfer dense.
+Capture still helps Quest more than dense (the next table), but here that only
+closes the gap rather than flipping it.
 
 ### CUDA-graph vs no-graph speedup (same method) — Qwen3-8B (trtllm)
 
 Side-by-side per-method speedup from CUDA-graph capture (speedup > 1 means CUDA
 graph is faster; `abs diff = CUDA-graph − no-graph`, so a negative number also
-means CUDA graph is faster). As with flashinfer, capture helps Quest more than
-dense at small batch (quest@64 bs=2: 2.01× vs dense 1.45×) — Quest's larger
-per-step overhead is exactly what graph capture removes.
+means CUDA graph is faster). Capture helps Quest far more than dense at small
+batch (quest@64 bs=2: 2.01× vs dense 1.55×) — Quest's larger per-step overhead is
+exactly what graph capture removes — which is why the dense/Quest gap narrows
+under CUDA graph even though Quest never overtakes.
 
 | attention | batch size | no-graph TPOT (ms) | CUDA-graph TPOT (ms) | abs diff (ms) | speedup (no-graph / CUDA-graph) |
 |---|---:|---:|---:|---:|---:|
-| dense | 1 | 8.262 | 5.595 | -2.668 | 1.476874 |
-| dense | 2 | 9.266 | 6.411 | -2.855 | 1.445314 |
-| dense | 4 | 10.493 | 8.133 | -2.360 | 1.290208 |
-| dense | 8 | 13.105 | 11.537 | -1.569 | 1.135962 |
-| dense | 16 | 18.790 | 17.969 | -0.821 | 1.045710 |
-| dense | 32 | 31.726 | 31.309 | -0.417 | 1.013322 |
-| dense | 64 | 61.898 | 61.218 | -0.680 | 1.011106 |
+| dense | 1 | 8.268 | 5.264 | -3.004 | 1.570710 |
+| dense | 2 | 9.389 | 6.039 | -3.350 | 1.554828 |
+| dense | 4 | 10.393 | 7.646 | -2.747 | 1.359207 |
+| dense | 8 | 12.951 | 10.671 | -2.280 | 1.213684 |
+| dense | 16 | 17.426 | 16.404 | -1.022 | 1.062295 |
+| dense | 32 | 29.190 | 28.441 | -0.749 | 1.026328 |
+| dense | 64 | 53.317 | 52.620 | -0.697 | 1.013251 |
 | quest | 1 | 10.645 | 5.391 | -5.254 | 1.974643 |
 | quest | 2 | 12.832 | 6.376 | -6.456 | 2.012666 |
 | quest | 4 | 14.332 | 8.219 | -6.113 | 1.743793 |
@@ -512,6 +531,9 @@ per-step overhead is exactly what graph capture removes.
 
 Result-table values above are 2-decimal-place rounded; the appendix `abs diff` /
 `speedup` columns were computed from the underlying full-precision aggregates.
+The `dense` rows reflect the `trtllm_mha` kernel; the quest / quest_topk29 rows
+are unchanged from the original trtllm sweep (only the dense arm was re-measured
+for the fair-baseline comparison).
 
 
 ## Reproduce
@@ -556,20 +578,22 @@ unchanged. The no-graph wrapper also sets `RUN_TREESPARSE=0`, skipping the
 TreeSparse stage (see
 [Why TreeSparse is omitted for Qwen3-8B](#why-treesparse-is-omitted-for-qwen3-8b)).
 
-To run Qwen3-8B with the **trtllm** vortex backend instead (writes into
-`results/qwen3_8b_trtllm/`; dense is backend-independent and identical to the
-flashinfer run, only the two Quest points differ):
+To run Qwen3-8B on the **TRT-LLM-family kernels** instead (writes into
+`results/qwen3_8b_trtllm/`; Quest uses vortex's trtllm sparse kernel, dense uses
+sglang's `trtllm_mha` dense kernel — see
+[Results — Qwen3-8B, trtllm attention backend](#results--qwen3-8b-trtllm-attention-backend)):
 
 ```bash
-# no-graph sweep (dense + quest@64 + quest@29) on Qwen3-8B, trtllm vortex backend
+# no-graph sweep (dense + quest@64 + quest@29) on Qwen3-8B, TRT-LLM kernels
 GPU=0 bash quest_batch_benchmark/run_benchmark_qwen3_8b_trtllm.sh
 
-# then the CUDA-graph sweep on Qwen3-8B, trtllm vortex backend
+# then the CUDA-graph sweep on Qwen3-8B, TRT-LLM kernels
 GPU=0 bash quest_batch_benchmark/run_benchmark_cudagraph_qwen3_8b_trtllm.sh
 ```
 
-These wrappers set `VORTEX_ATTENTION_BACKEND=trtllm` + `RESULTS_DIR=results/qwen3_8b_trtllm`;
-the generic drivers default `VORTEX_ATTENTION_BACKEND=flashinfer`, so every other
+These wrappers set `VORTEX_ATTENTION_BACKEND=trtllm` (Quest) + `ATTENTION_BACKEND=trtllm_mha`
+(dense) + `RESULTS_DIR=results/qwen3_8b_trtllm`; the generic drivers default both
+backends to flashinfer, so every other
 run is unaffected.
 
 `run_benchmark.sh` now runs three stages: `dense`, `quest`, and `treesparse`.
