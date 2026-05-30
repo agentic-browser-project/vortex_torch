@@ -142,8 +142,11 @@ def build_engine_kwargs(args, n_input_tokens: int) -> dict:
             "vortex_compilation_cache_dir": args.vortex_cache_dir,
         })
     else:
-        # dense -- full attention; sparsity explicitly off
+        # dense -- full attention; sparsity explicitly off. Dense may use a
+        # different sglang attention backend (e.g. trtllm_mha) since it does
+        # not go through the vortex flashinfer-registered sparse path.
         kwargs["enable_vortex_sparsity"] = False
+        kwargs["attention_backend"] = args.attention_backend
     return kwargs
 
 
@@ -207,8 +210,11 @@ def build_get_engine_kwargs(args, n_input_tokens: int) -> dict:
         # get_engine hardcodes enable_vortex_sparsity=True; flip it off for
         # the dense baseline. The vortex_* kwargs remain in the call but are
         # not consulted by sglang when sparsity is off (verified by the
-        # smoke test in Task 5).
+        # smoke test in Task 5). Dense may also use a different sglang
+        # attention backend (e.g. trtllm_mha); quest stays on flashinfer
+        # because the vortex sparse path is registered under it.
         kwargs["enable_vortex_sparsity"] = False
+        kwargs["attention_backend"] = args.attention_backend
     return kwargs
 
 
@@ -496,6 +502,15 @@ def build_parser() -> argparse.ArgumentParser:
                         "attention_backend (the sglang dense backend) stays "
                         "flashinfer either way -- the proven pairing in "
                         "examples/verify_algo.py.")
+    p.add_argument("--attention-backend", default="flashinfer",
+                   choices=["flashinfer", "trtllm_mha"],
+                   help="sglang's DENSE attention backend (the dense baseline). "
+                        "Default 'flashinfer' keeps existing runs byte-identical. "
+                        "'trtllm_mha' runs dense through TensorRT-LLM's MHA kernel "
+                        "(B200/sm100, non-MLA models like Qwen3). NOTE: only "
+                        "applied for --attention dense; for --attention quest the "
+                        "backend is pinned to flashinfer because the vortex sparse "
+                        "path is registered under sglang's flashinfer backend.")
     return p
 
 

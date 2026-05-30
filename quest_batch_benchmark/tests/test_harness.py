@@ -15,7 +15,8 @@ def _args(attention, **over):
              repeat=3, topk_val=64, enable_cuda_graph=False,
              mem_fraction_static=None, max_seq_lens=16384,
              vortex_cache_dir="/tmp/vcache", engine_api="get_engine",
-             vortex_attention_backend="flashinfer")
+             vortex_attention_backend="flashinfer",
+             attention_backend="flashinfer")
     d.update(over)
     return SimpleNamespace(**d)
 
@@ -291,3 +292,48 @@ def test_vortex_attention_backend_in_build_get_engine_kwargs():
     kt = build_get_engine_kwargs(
         _args("quest", vortex_attention_backend="trtllm"), n_input_tokens=9661)
     assert kt["vortex_attention_backend"] == "trtllm"
+
+
+def test_attention_backend_defaults_to_flashinfer_cli():
+    import benchmark_quest_tpot as bm
+    a = bm.build_parser().parse_args(["--attention", "dense"])
+    assert a.attention_backend == "flashinfer"
+
+
+def test_attention_backend_roundtrips_trtllm_mha_cli():
+    import benchmark_quest_tpot as bm
+    a = bm.build_parser().parse_args(
+        ["--attention", "dense", "--attention-backend", "trtllm_mha"])
+    assert a.attention_backend == "trtllm_mha"
+
+
+def test_dense_attention_backend_honored_build_engine_kwargs():
+    # dense default stays flashinfer
+    kf = build_engine_kwargs(_args("dense"), n_input_tokens=9661)
+    assert kf["attention_backend"] == "flashinfer"
+    # dense can switch to trtllm_mha
+    kt = build_engine_kwargs(
+        _args("dense", attention_backend="trtllm_mha"), n_input_tokens=9661)
+    assert kt["attention_backend"] == "trtllm_mha"
+
+
+def test_quest_attention_backend_pinned_flashinfer_build_engine_kwargs():
+    # quest must KEEP attention_backend=flashinfer (vortex registration hook),
+    # even if --attention-backend trtllm_mha is passed.
+    kt = build_engine_kwargs(
+        _args("quest", attention_backend="trtllm_mha"), n_input_tokens=9661)
+    assert kt["attention_backend"] == "flashinfer"
+
+
+def test_dense_attention_backend_honored_build_get_engine_kwargs():
+    kf = build_get_engine_kwargs(_args("dense"), n_input_tokens=9661)
+    assert kf["attention_backend"] == "flashinfer"
+    kt = build_get_engine_kwargs(
+        _args("dense", attention_backend="trtllm_mha"), n_input_tokens=9661)
+    assert kt["attention_backend"] == "trtllm_mha"
+
+
+def test_quest_attention_backend_pinned_flashinfer_build_get_engine_kwargs():
+    kt = build_get_engine_kwargs(
+        _args("quest", attention_backend="trtllm_mha"), n_input_tokens=9661)
+    assert kt["attention_backend"] == "flashinfer"
