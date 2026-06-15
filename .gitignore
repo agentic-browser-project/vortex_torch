@@ -239,6 +239,35 @@ work_dirs/
 # Sphinx docs static assets (logo/favicon) — track despite the global *.png rule.
 !docs/_static/*.png
 
+# Files tracked on v0.6-modified but not v0.6
+examples/bench_html_request.py
+examples/run_bench_html_request.sh
+html_request/
+quest_batch_benchmark/
+third_party/sglang/.clang-format-ignore
+third_party/sglang/.devcontainer/
+third_party/sglang/.editorconfig
+third_party/sglang/.github/
+third_party/sglang/.gitignore
+third_party/sglang/.gitmodules
+third_party/sglang/.isort.cfg
+third_party/sglang/.pre-commit-config.yaml
+third_party/sglang/3rdparty/
+third_party/sglang/LICENSE
+third_party/sglang/Makefile
+third_party/sglang/README.md
+third_party/sglang/assets/
+third_party/sglang/benchmark/
+third_party/sglang/docker/
+third_party/sglang/docs/
+third_party/sglang/examples/
+third_party/sglang/install.sh
+third_party/sglang/python/
+third_party/sglang/sgl-kernel/
+third_party/sglang/sgl-pdlb/
+third_party/sglang/sgl-router/
+third_party/sglang/test/
+
 # Prerequisites
 *.d
 
