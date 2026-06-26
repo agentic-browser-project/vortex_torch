@@ -25,6 +25,7 @@ for trial in 16 32 64; do
         --generation-max-new-tokens 16384 \
         --max-input-length 4096 \
         --tp-size 1 \
+        --vortex-impl-backend triton \
         --summary-dir summary-Qwen3-1.7B \
       || echo "!!! FAILED: trial=${trial} k=${k_val} — continuing"
   done
