@@ -116,6 +116,13 @@ class VortexFlashInferBackend(AttentionBackend):
         self.data_type = model_runner.kv_cache_dtype
         self.q_data_type = model_runner.dtype
         self.decode_use_tensor_cores = should_use_tensor_core(self.data_type, self.num_qo_heads, self.num_kv_heads)
+        disable_split = os.environ.get("VORTEX_DISABLE_SPLIT_KV", "0")
+        if disable_split not in ("0", "1"):
+            raise ValueError("VORTEX_DISABLE_SPLIT_KV must be 0 or 1")
+        self.disable_split_kv = disable_split == "1"
+        if self.disable_split_kv and not self.decode_use_tensor_cores:
+            raise ValueError("Non-split Vortex decode requires the tensor-core FlashInfer path")
+        print(f"[Vortex] sparse decode disable_split_kv={self.disable_split_kv}", flush=True)
         assert self.q_data_type in [torch.bfloat16, torch.float8_e5m2, torch.float8_e4m3fn]
         assert self.data_type in [torch.bfloat16, torch.float8_e5m2, torch.float8_e4m3fn]
         self.is_fp8 = (self.data_type in [torch.float8_e5m2, torch.float8_e4m3fn])
@@ -322,6 +329,7 @@ class VortexFlashInferBackend(AttentionBackend):
                 page_size=self.block_size,
                 q_data_type=self.q_data_type,
                 kv_data_type=self.data_type,
+                disable_split_kv=self.disable_split_kv,
             )
             self.forward_metadata = DecodeMetadata([self.decode_wrappers[0], self.decode_wrappers[1]])
 
@@ -460,6 +468,7 @@ class VortexFlashInferBackend(AttentionBackend):
                 page_size=self.block_size,
                 q_data_type=self.q_data_type,
                 kv_data_type=self.data_type,
+                disable_split_kv=self.disable_split_kv,
             )
             
             self.decode_cuda_graph_metadata[bs] = decode_wrappers
@@ -510,6 +519,7 @@ class VortexFlashInferBackend(AttentionBackend):
             page_size=self.block_size,
             q_data_type=self.q_data_type,
             kv_data_type=self.data_type,
+            disable_split_kv=self.disable_split_kv,
         )
 
     def get_cuda_graph_seq_len_fill_value(self):

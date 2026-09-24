@@ -389,11 +389,11 @@ def check_engine_config(config_path: Union[str, Path]) -> Dict[str, Any]:
             f"vortex_workload_chunk_size must be a positive power of 2, got {chunk!r}"
         )
 
-    # 4. vortex_block_reserved_{bos,eos} >= 1, ints
+    # 4. vortex_block_reserved_{bos,eos} >= 0, ints (0 = no reservation)
     for key in ("vortex_block_reserved_bos", "vortex_block_reserved_eos"):
         v = _coerce_int(config.get(key), key)
-        if v < 1:
-            raise EngineConfigError(f"{key} must be an int >= 1, got {v!r}")
+        if v < 0:
+            raise EngineConfigError(f"{key} must be an int >= 0, got {v!r}")
 
     # 5. vortex_layers_skip absent/None/empty or list of ints
     layers_skip = config.get("vortex_layers_skip", None)

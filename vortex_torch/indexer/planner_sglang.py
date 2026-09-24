@@ -119,7 +119,10 @@ __global__ void Sgl_Decode_Plan_Indptr_V2_Kernel(
     } temp;
 
     const int block_cnt = (tx < batch_size) ? cached_block_len : 0;
-    const int sparse_cnt = (tx < batch_size) ? min(kv_budget, cached_block_len) : 0;
+    // A zero-length sparse row would make the attention kernel softmax over an
+    // empty key set (NaN), so keep at least one block whenever the sequence has
+    // one. Reachable once topk_val / bos / eos are all 0 and the ratio floors to 0.
+    const int sparse_cnt = (tx < batch_size) ? min(max(kv_budget, 1), cached_block_len) : 0;
 
     int2 in = make_int2(block_cnt, sparse_cnt);
     int2 out;
@@ -135,7 +138,7 @@ __global__ void Sgl_Decode_Plan_Indptr_V2_Kernel(
                 dense_cumsum * num_kv_heads - i * cached_block_len;
 
             sparse_kv_indptr[num_kv_heads * (tx + 1) - i] =
-                sparse_cumsum * num_kv_heads - i * min(kv_budget, cached_block_len);
+                sparse_cumsum * num_kv_heads - i * sparse_cnt;
         }
     }
 
@@ -399,10 +402,17 @@ void sglang_plan_decode_v2(
     TORCH_CHECK(block_size >= 1, "block_size must be >= 1");
     TORCH_CHECK(page_size % block_size == 0, "page_size must be divisible by block_size");
     TORCH_CHECK(num_kv_heads >= 1, "num_kv_heads must be >= 1");
-    TORCH_CHECK(topk_val >= 1, "topk_val must be >= 1");
+    TORCH_CHECK(topk_val >= 0, "topk_val must be >= 0");
     TORCH_CHECK(topk_ratio >= 0.0 && topk_ratio <= 1.0, "topk_ratio must be in [0, 1]");
     TORCH_CHECK(block_reserved_bos >= 0, "block_reserved_bos must be >= 0");
-    TORCH_CHECK(block_reserved_eos >= 1, "block_reserved_eos must be >= 1");
+    // MUST stay >= 1: the indices kernel writes the sequence's final blocks at the
+    // TAIL of the sparse row, and flashinfer applies kv_last_page_len to whatever
+    // block lands in that last slot. With eos = 0 the tail is filled by score order,
+    // so the newest tokens can be dropped and an unrelated full block gets truncated
+    // to last_page_len -- the model loses its recent context and emits garbage.
+    TORCH_CHECK(block_reserved_eos >= 1,
+        "block_reserved_eos must be >= 1: the last selected block must be the "
+        "sequence's final block (kv_last_page_len is applied to it)");
     TORCH_CHECK(workload_chunk_size >= 1, "workload_chunk_size must be >= 1");
 
     const int batch_size = static_cast<int>(cached_seq_lens.size(0));
@@ -560,7 +570,9 @@ __global__ void Sgl_Decode_Plan_Seqlens_V2_Trtllm_Kernel(
     const int kv_budget_raw = ComputeKvBudget(
         block_len, topk_val, topk_ratio,
         block_reserved_bos, block_reserved_eos);
-    const int sparse_block_len = (kv_budget_raw < block_len) ? kv_budget_raw : block_len;
+    // Mirror the CSR planner's floor: never emit an empty sparse row.
+    const int kv_budget_floored = (kv_budget_raw < 1) ? 1 : kv_budget_raw;
+    const int sparse_block_len = (kv_budget_floored < block_len) ? kv_budget_floored : block_len;
 
     const int last_len_mod = cached_seq_len % block_size;
     const int last_block_len = (last_len_mod == 0) ? block_size : last_len_mod;
@@ -730,10 +742,17 @@ void sglang_plan_decode_v2_trtllm(
     TORCH_CHECK(block_size >= 1, "block_size must be >= 1");
     TORCH_CHECK(page_size % block_size == 0, "page_size must be divisible by block_size");
     TORCH_CHECK(num_kv_heads >= 1, "num_kv_heads must be >= 1");
-    TORCH_CHECK(topk_val >= 1, "topk_val must be >= 1");
+    TORCH_CHECK(topk_val >= 0, "topk_val must be >= 0");
     TORCH_CHECK(topk_ratio >= 0.0 && topk_ratio <= 1.0, "topk_ratio must be in [0, 1]");
     TORCH_CHECK(block_reserved_bos >= 0, "block_reserved_bos must be >= 0");
-    TORCH_CHECK(block_reserved_eos >= 1, "block_reserved_eos must be >= 1");
+    // MUST stay >= 1: the indices kernel writes the sequence's final blocks at the
+    // TAIL of the sparse row, and flashinfer applies kv_last_page_len to whatever
+    // block lands in that last slot. With eos = 0 the tail is filled by score order,
+    // so the newest tokens can be dropped and an unrelated full block gets truncated
+    // to last_page_len -- the model loses its recent context and emits garbage.
+    TORCH_CHECK(block_reserved_eos >= 1,
+        "block_reserved_eos must be >= 1: the last selected block must be the "
+        "sequence's final block (kv_last_page_len is applied to it)");
     TORCH_CHECK(workload_chunk_size >= 1, "workload_chunk_size must be >= 1");
 
     const int batch_size = static_cast<int>(cached_seq_lens.size(0));
@@ -839,7 +858,10 @@ def _make_cuda_source(policy_body: str) -> str:
 
 
 def _module_name_from_policy(policy_body: str) -> str:
-    digest = hashlib.sha256(policy_body.encode("utf-8")).hexdigest()[:16]
+    # Hash the kernel template too: editing CUDA_TEMPLATE alone would otherwise
+    # reuse a previously built extension under the same module name.
+    key = policy_body + "\x00" + CUDA_TEMPLATE
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
     return f"sglang_plan_decode_v2_ext_{digest}"
 
 

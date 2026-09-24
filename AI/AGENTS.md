@@ -311,7 +311,7 @@ values that suit your flow. The ones that need special care:
 | `vortex_block_size` | positive power of 2 (e.g. 8, 16, 32). Smaller = finer sparsity granularity, larger = less cache-summary overhead. |
 | `vortex_workload_chunk_size` | positive power of 2 (e.g. 16, 32, 64). |
 | `vortex_topk_val` / `vortex_topk_ratio` | per-sequence sparse-page budget (see "Budget semantics" below). |
-| `vortex_block_reserved_bos` / `_eos` | ints ≥ 1. Reserved first / last blocks that are always selected (see "BOS/EOS semantics" below). |
+| `vortex_block_reserved_bos` / `_eos` | Reserved first / last blocks that are always selected. `bos` is an int ≥ 0 (`0` disables the sink reservation); `eos` MUST stay ≥ 1 — the planner rejects 0 (see "BOS/EOS semantics" below). |
 | `vortex_layers_skip` | list of layer ids that bypass sparse attention (run dense). See "Layer-skip patterns" below. |
 | `vortex_dtype` | dtype for **intermediate** tensors. **Recommended: `"bfloat16"`.** Other accepted values: `"float16"`, `"float32"`, `"fp8_e5m2"`, `"fp8_e4m3"` — use only if you have a specific reason; bf16 is the tested default. |
 | `kv_cache_dtype` | dtype for the **K/V cache itself**. Choose from: `"auto"` (resolves to bfloat16), `"fp8_e4m3"`, or `"fp8_e5m2"`. Using fp8 halves cache memory at the cost of numerical precision; bf16 via `"auto"` is the safe default. |
@@ -369,7 +369,16 @@ your top-k selection afterwards. That's why the static floor in the
 budget formula adds `bos + eos` to `topk_val`: the count reflects
 "learned top-k" plus "fixed reservations".
 
-Sensible values: `bos = 1-2`, `eos = 1-4`.
+Sensible values: `bos = 1-2`, `eos = 1-4`. `bos` accepts `0`, which turns the
+sink reservation off so selection is purely score-driven (as in the original
+Quest paper). `eos` must stay `>= 1`: the indices kernel writes the sequence's
+final blocks at the tail of the sparse row and flashinfer applies
+`kv_last_page_len` to whatever block lands in that last slot — with `eos = 0`
+an unrelated block can land there and get truncated while the newest tokens are
+dropped, so the planner rejects it. With `topk_val = bos = 0` (and `eos = 1`)
+the budget is `max(1, int(cached_block_len * topk_ratio))` — the static floor
+shrinks to the single reserved EOS block, so the ratio drives selection, and
+the planner never emits an empty sparse row.
 
 ### Layer-skip patterns (`vortex_layers_skip`)
 
