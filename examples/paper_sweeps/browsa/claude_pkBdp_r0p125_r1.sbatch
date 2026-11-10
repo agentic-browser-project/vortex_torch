@@ -1,0 +1,55 @@
+#!/bin/bash
+#SBATCH --job-name=claude-pkBdp-r0p125-r1
+#SBATCH --output=/vast/projects/liuv/pennnetworks/jiaheng/xqa_bench_log/claude_pkBdp_r0p125_r1_%j.out
+#SBATCH --time=04:00:00
+#SBATCH --partition=dgx-b200
+#SBATCH --gpus=1
+#SBATCH --cpus-per-task=28
+cd /vast/projects/liuv/pennnetworks/jiaheng/BrowserSparseAttention/results/webvoyager_e2e
+export SGLANG_DECODE_BACKEND=bsa_v2_tuned_packing
+export BSA2_E2E_BOUNDARY=1
+export BSA_GRID_ROOT=/vast/projects/liuv/pennnetworks/jiaheng/BrowserSparseAttention
+export BSA_TUNED_ATTENTION=tc_no_split
+export SGLANG_MEM_FRACTION_STATIC=0.60
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export SGLANG_CUDA_GRAPH=1
+export SGLANG_CUDA_GRAPH_MAX_BS=16
+export SGLANG_RADIX_CACHE=0
+export SGLANG_PAGE_SIZE=32
+export BSA2_KERNELS_DIR=/vast/projects/liuv/pennnetworks/jiaheng/BrowserSparseAttention/build
+export BSA2_CHUNK_MODE=semantic
+export BSA2_CHUNK_EXTRACT=semantic_v2
+export BSA2_MIN_CHUNK=6
+export BSA2_MAX_CHUNK=16
+export BSA2_SCORE_METHOD=mixmax_wn
+export BSA2_WN_ALPHA=0.25
+export BSA2_WN_REF=16
+export BSA2_HEAD_SELECT=per_kv
+export BSA2_QUERY_COMBINE=mean_q
+export BSA2_PAGE_BUDGET=0
+export BSA2_GEN_CHUNKS=0
+export BSA_SELECTION_POLICY=distinct_page_budget
+export BSA2_BUDGET_CONVENTION=count_generation_reservation
+export BSA2_RESERVED_BOS_PAGES=0
+export BSA2_RESERVED_RECENT_PAGES=0
+export BSA2_SYS_FLOOR=0
+export BSA2_SYS_CAP=0
+export BSA2_HIST_FLOOR=0
+export BSA2_STATIC_PACK=d_worst
+export BSA2_PACK_CLUSTERING=cpu
+export BSA2_PAGE_TELEMETRY=/vast/projects/liuv/pennnetworks/jiaheng/BrowserSparseAttention/results/webvoyager_e2e/results/mixmax_wn_sweep/sglang_packed/dp_gaia_setB_r0p125/run1/selected_pages.jsonl
+export BSA2_PAGE_TELEMETRY_EVERY=1
+export BSA2_PACK_VERIFY_GPU=0
+export BSA2_PACK_PRESERVE_RESERVED=1
+export BSA2_ALWAYS_INCLUDE_FIRST_CHUNK=0
+export BSA2_ALWAYS_INCLUDE_START_PAGES=1
+export BSA2_ALWAYS_INCLUDE_RECENT_PAGES=2
+export BSA2_GRAPH_MAX_CHUNKS=4096
+export BSA2_TOKEN_SELECT_RATIO=0.125
+export BSA2_REQUIRE_SPARSE=1
+export BSA2_LOG_EVERY=20
+export SIM_STEP_TIMEOUT=1200
+export SIM_SOURCE=gaia
+OUT=/vast/projects/liuv/pennnetworks/jiaheng/BrowserSparseAttention/results/webvoyager_e2e/results/mixmax_wn_sweep/sglang_packed/dp_gaia_setB_r0p125/run1
+mkdir -p "$OUT"
+bash run_e2e_sglang_longwait.sh 17251 "$OUT" 90 16

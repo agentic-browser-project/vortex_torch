@@ -1,0 +1,200 @@
+Coursera--29
+Huggingface--12
+Amazon--26
+Wolfram Alpha--44
+Google Flights--37
+Allrecipes--17
+Google Search--11
+Allrecipes--5
+GitHub--36
+Booking--19
+Wolfram Alpha--6
+Cambridge Dictionary--14
+BBC News--38
+ArXiv--36
+ESPN--33
+Google Map--40
+ESPN--27
+Huggingface--34
+Booking--18
+Google Flights--41
+Amazon--27
+Google Map--11
+Wolfram Alpha--15
+Cambridge Dictionary--21
+Cambridge Dictionary--25
+Huggingface--17
+Apple--35
+GitHub--11
+Apple--37
+ESPN--30
+Google Search--18
+ArXiv--33
+ArXiv--38
+Cambridge Dictionary--3
+Apple--34
+Google Search--14
+Huggingface--31
+Apple--24
+Coursera--13
+Wolfram Alpha--16
+Wolfram Alpha--4
+Wolfram Alpha--20
+ArXiv--5
+Allrecipes--38
+Apple--29
+GitHub--28
+Google Map--25
+Google Search--40
+Coursera--28
+Wolfram Alpha--1
+Allrecipes--8
+Booking--41
+ESPN--9
+ESPN--18
+Huggingface--18
+Cambridge Dictionary--5
+Google Map--3
+Amazon--29
+GitHub--19
+Wolfram Alpha--26
+Booking--24
+Google Search--0
+Google Search--1
+Amazon--8
+GitHub--25
+Wolfram Alpha--21
+Wolfram Alpha--10
+Allrecipes--18
+Huggingface--15
+Wolfram Alpha--31
+Huggingface--5
+BBC News--30
+BBC News--1
+ESPN--17
+ESPN--13
+Google Map--0
+Coursera--17
+Amazon--40
+ArXiv--34
+Cambridge Dictionary--9
+Google Map--6
+Booking--4
+Allrecipes--9
+Booking--21
+BBC News--20
+Amazon--2
+Wolfram Alpha--12
+Amazon--32
+Cambridge Dictionary--38
+ArXiv--41
+Coursera--41
+Amazon--11
+BBC News--18
+Wolfram Alpha--7
+Apple--23
+ArXiv--2
+GitHub--15
+Amazon--34
+ESPN--41
+Wolfram Alpha--32
+Apple--20
+Amazon--23
+Wolfram Alpha--23
+Booking--17
+GitHub--3
+Amazon--5
+GitHub--0
+Huggingface--42
+Wolfram Alpha--40
+Allrecipes--19
+GitHub--1
+Booking--14
+Google Search--30
+Google Flights--12
+Cambridge Dictionary--32
+Coursera--12
+ESPN--1
+Cambridge Dictionary--2
+Cambridge Dictionary--22
+Booking--0
+Google Flights--9
+Allrecipes--0
+Wolfram Alpha--43
+Wolfram Alpha--36
+GitHub--32
+Allrecipes--40
+BBC News--26
+Google Flights--18
+Google Flights--28
+Google Flights--24
+Google Search--37
+Wolfram Alpha--14
+Allrecipes--35
+ArXiv--42
+Apple--42
+Google Map--10
+Apple--16
+Cambridge Dictionary--20
+Booking--26
+Wolfram Alpha--24
+Booking--43
+BBC News--11
+ESPN--29
+Google Search--28
+Google Map--21
+ESPN--37
+Huggingface--24
+ArXiv--20
+Wolfram Alpha--34
+Apple--8
+ArXiv--4
+Huggingface--32
+Cambridge Dictionary--19
+Wolfram Alpha--22
+Allrecipes--36
+Allrecipes--31
+Wolfram Alpha--9
+Google Search--26
+Allrecipes--11
+Google Map--9
+GitHub--13
+Booking--10
+Cambridge Dictionary--23
+ESPN--36
+Amazon--1
+Huggingface--27
+ESPN--0
+Amazon--6
+Booking--11
+Apple--32
+ArXiv--24
+Google Map--17
+Google Flights--1
+Apple--25
+Booking--27
+Allrecipes--33
+Huggingface--19
+Wolfram Alpha--45
+Allrecipes--14
+Apple--7
+Huggingface--23
+Huggingface--10
+Apple--41
+Google Search--5
+Google Flights--25
+Apple--15
+BBC News--37
+Booking--30
+Apple--17
+Google Map--13
+ArXiv--14
+Huggingface--6
+GitHub--7
+Coursera--37
+Huggingface--7
+Booking--9
+Apple--11
+Huggingface--2
+Booking--35
+GitHub--10
